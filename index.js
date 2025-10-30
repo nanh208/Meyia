@@ -88,15 +88,26 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
     // 🔹 LỆNH /AVATAR
-    if (interaction.commandName === "avatar") {
+if (interaction.commandName === "avatar") {
+    try {
         const user = interaction.options.getUser("user") || interaction.user;
+
+        const avatarURL = user.displayAvatarURL({ dynamic: true, size: 1024 });
+        if (!avatarURL) return interaction.reply({ content: "❌ Không thể lấy avatar!", ephemeral: true });
+
         const embed = new EmbedBuilder()
-            .setTitle(`🖼️ Avatar của ${user.username}`)
-            .setImage(user.displayAvatarURL({ size: 1024, dynamic: true }))
             .setColor("#FF69B4")
-            .setFooter({ text: `Yêu cầu bởi ${interaction.user.tag}` });
-        return interaction.reply({ embeds: [embed] });
+            .setTitle(`🖼️ Avatar của ${user.tag}`)
+            .setImage(avatarURL)
+            .setFooter({ text: `Yêu cầu bởi ${interaction.user.tag}` })
+            .setTimestamp();
+
+        await interaction.reply({ embeds: [embed] });
+    } catch (err) {
+        console.error("⚠️ Lỗi /avatar:", err);
+        await interaction.reply({ content: "❌ Đã xảy ra lỗi khi hiển thị avatar.", ephemeral: true });
     }
+}
 
     // 🔹 LỆNH /GIVEAWAY
     if (interaction.commandName === "giveaway") {
