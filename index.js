@@ -1,4 +1,10 @@
-const { Client, Events, GatewayIntentBits, ApplicationCommandOptionType } = require('discord.js');
+const { 
+    Client, 
+    Events, 
+    GatewayIntentBits, 
+    ApplicationCommandOptionType, 
+    EmbedBuilder 
+} = require('discord.js');
 const { GiveawaysManager } = require('discord-giveaways');
 require("dotenv").config();
 
@@ -40,7 +46,7 @@ const manager = new GiveawaysManager(client, {
         botsCanWin: false,
         embedColor: '#FF1493',
         embedColorEnd: '#000000',
-        reaction: '🎉',
+        reaction: '<a:1261960933270618192:1433286685189341204>',
         lastChance: {
             enabled: true,
             content: '⏰ **HẾT GIỜ** ⏰',
@@ -69,6 +75,13 @@ client.once(Events.ClientReady, async (readyClient) => {
                 { name: 'winners', description: 'Số người chiến thắng', type: ApplicationCommandOptionType.Integer, required: true },
                 { name: 'prize', description: 'Phần thưởng hoặc mô tả', type: ApplicationCommandOptionType.String, required: true }
             ]
+        },
+        {
+            name: 'avatar',
+            description: 'Xem avatar của ai đó hoặc chính bạn',
+            options: [
+                { name: 'user', description: 'Chọn người dùng', type: ApplicationCommandOptionType.User, required: false }
+            ]
         }
     ]);
 
@@ -79,7 +92,21 @@ client.once(Events.ClientReady, async (readyClient) => {
 // 🎉 LỆNH /GIVEAWAY
 //-----------------------------------------------//
 client.on(Events.InteractionCreate, async interaction => {
-    if (!interaction.isCommand() || interaction.commandName !== 'giveaway') return;
+    if (!interaction.isCommand()) return;
+
+    // 🔹 LỆNH AVATAR
+    if (interaction.commandName === 'avatar') {
+        const user = interaction.options.getUser('user') || interaction.user;
+        const avatarEmbed = new EmbedBuilder()
+            .setTitle(`🖼️ Avatar của ${user.username}`)
+            .setImage(user.displayAvatarURL({ size: 1024, dynamic: true }))
+            .setColor('#FF69B4')
+            .setFooter({ text: `Yêu cầu bởi ${interaction.user.tag}` });
+        return interaction.reply({ embeds: [avatarEmbed] });
+    }
+
+    // 🔹 LỆNH GIVEAWAY
+    if (interaction.commandName !== 'giveaway') return;
     const ms = require('ms');
 
     if (!interaction.member.permissions.has('ManageMessages'))
@@ -92,14 +119,18 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!duration || duration > ms('7d'))
         return interaction.reply({ content: '❌ Thời gian không hợp lệ (tối đa 7 ngày).', ephemeral: true });
 
-    //-----------------------------------------------//
-    // 🔢 SINH MÃ GIVEAWAY 10 SỐ
-    //-----------------------------------------------//
+    // 🧱 Chống spam tạo 2 lần
+    if (interaction.client.activeGiveawayUser === interaction.user.id) {
+        return interaction.reply({ content: '⚠️ Bạn đang tạo giveaway khác, hãy chờ hoàn tất.', ephemeral: true });
+    }
+    interaction.client.activeGiveawayUser = interaction.user.id;
+
+    await interaction.deferReply({ ephemeral: true });
+
+    // 🔢 Sinh mã giveaway 10 số
     const code = Math.floor(1000000000 + Math.random() * 9000000000).toString();
 
-    //-----------------------------------------------//
-    // 🎁 TẠO GIVEAWAY
-    //-----------------------------------------------//
+    // 🎁 Tạo giveaway
     const giveaway = await client.giveawaysManager.start(interaction.channel, {
         duration,
         winnerCount,
@@ -107,20 +138,36 @@ client.on(Events.InteractionCreate, async interaction => {
         hostedBy: interaction.user.toString(),
         data: { code, ownerId: interaction.user.id },
         messages: {
-            giveaway: '🎉 **GIVEAWAY** 🎉',
-            giveawayEnded: '🎉 **GIVEAWAY ĐÃ KẾT THÚC** 🎉',
-            inviteToParticipate: 'Nhấn 🎉 để tham gia!',
-            drawing: '⏳ Thời gian còn lại: **{duration}**',
-            hostedBy: '🎀 Tổ chức bởi: {this.hostedBy}',
-            winners: '🏆 Người chiến thắng:',
+            giveaway:
+                '<a:1255341894687260775:1433317867293642858>\n' +
+                '💫🌸 **Ｇ Ｉ Ｖ Ｅ Ａ Ｗ Ａ Ｙ** 🌸💫\n' +
+                '<a:1261960933270618192:1433286685189341204>',
+
+            giveawayEnded:
+                '<a:1255341894687260775:1433317867293642858>\n' +
+                '🌙💫 **Ｇ Ｉ Ｖ Ｅ Ａ Ｗ Ａ Ｙ Đ Ã  K Ế T  T H Ú C** 💫🌙\n' +
+                '<a:1261960933270618192:1433286685189341204>',
+
+            embedTitle: '**{this.prize}**',
+            embedDescription:
+                '<a:12553406462486160061:1433317989406605383> Nhấn biểu tượng <a:1261960933270618192:1433286685189341204> bên dưới để tham gia!\n' +
+                '⏳ Đếm ngược: **{duration}**\n' +
+                '🎀 Tổ chức bởi: {this.hostedBy}',
+
+            thumbnail: null,
+            embedColor: '#FFB6C1',
+            embedFooter: '🎁 Số lượng giải: {this.winnerCount}',
+
+            noWinner: '😭 Giveaway kết thúc nhưng không có người tham gia hợp lệ!',
+            winners: '👑 Người chiến thắng:',
             endedAt: '⏰ Kết thúc vào',
-            noWinner: '😢 Không có ai tham gia!'
+            winMessage: '🎉 {winners} đã thắng **{this.prize}**! 🎊',
+            hostedBy: '🎀 Tổ chức bởi: {this.hostedBy}',
+            units: { seconds: 'giây', minutes: 'phút', hours: 'giờ', days: 'ngày' }
         }
     });
 
-    //-----------------------------------------------//
-    // 💌 GỬI MÃ NGAY LẬP TỨC CHO NGƯỜI TẠO
-    //-----------------------------------------------//
+    // 💌 Gửi mã riêng qua DM
     let sent = false;
     try {
         await interaction.user.send(
@@ -135,15 +182,16 @@ client.on(Events.InteractionCreate, async interaction => {
         sent = true;
     } catch { sent = false; }
 
-    await interaction.reply({
+    await interaction.editReply({
         content:
             `✅ Giveaway đã được tạo thành công!\n` +
             (sent
-                ? `💌 Mã giveaway đã được gửi riêng cho bạn qua DM.`
+                ? `💌 Mã giveaway đã được gửi riêng qua DM.`
                 : `⚠️ Không thể gửi DM — đây là mã của bạn: **${code}**`) +
-            `\n📜 Dùng \`!fix ${code}\`, \`!stop ${code}\`, hoặc \`!random ${code}\` để quản lý.`,
-        ephemeral: true
+            `\n📜 Dùng \`!fix ${code}\`, \`!stop ${code}\`, hoặc \`!random ${code}\` để quản lý.`
     });
+
+    delete interaction.client.activeGiveawayUser;
 });
 
 //-----------------------------------------------//
@@ -188,7 +236,7 @@ client.on(Events.MessageCreate, async message => {
 });
 
 //-----------------------------------------------//
-// 🔁 LỆNH KHỞI ĐỘNG LẠI (CHỈ CHO CHỦ BOT)
+// 🔄 LỆNH KHỞI ĐỘNG LẠI BOT
 //-----------------------------------------------//
 client.on(Events.MessageCreate, async message => {
     if (message.author.bot) return;
