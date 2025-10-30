@@ -1,9 +1,10 @@
-
-const { Client, Events, GatewayIntentBits, ApplicationCommandOptionType, EmbedBuilder } = require('discord.js');
+const { Client, Events, GatewayIntentBits, ApplicationCommandOptionType } = require('discord.js');
 const { GiveawaysManager } = require('discord-giveaways');
 require("dotenv").config();
 
-// Khởi tạo client với các intents cần thiết
+//-----------------------------------------------//
+// ⚙️ KHỞI TẠO CLIENT
+//-----------------------------------------------//
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -14,232 +15,187 @@ const client = new Client({
     ]
 });
 
-// Hàm chuyển đổi thời gian
+//-----------------------------------------------//
+// ⏰ HÀM CHUYỂN THỜI GIAN
+//-----------------------------------------------//
 function formatTime(ms) {
     const seconds = Math.floor((ms / 1000) % 60);
     const minutes = Math.floor((ms / 1000 / 60) % 60);
     const hours = Math.floor((ms / 1000 / 60 / 60) % 24);
     const days = Math.floor(ms / 1000 / 60 / 60 / 24);
-
     const parts = [];
     if (days > 0) parts.push(`${days} ngày`);
     if (hours > 0) parts.push(`${hours} giờ`);
     if (minutes > 0) parts.push(`${minutes} phút`);
     if (seconds > 0) parts.push(`${seconds} giây`);
-
     return parts.join(', ');
 }
 
-// Khởi tạo GiveawaysManager
+//-----------------------------------------------//
+// 🎁 KHỞI TẠO GIVEAWAYS MANAGER
+//-----------------------------------------------//
 const manager = new GiveawaysManager(client, {
     storage: './giveaways.json',
     default: {
         botsCanWin: false,
         embedColor: '#FF1493',
         embedColorEnd: '#000000',
-        // Reaction (icon users should react with to enter) — use provided participation emoji
-        reaction: '<a:1261960933270618192:1433286685189341204>',
+        reaction: '🎉',
         lastChance: {
             enabled: true,
             content: '⏰ **HẾT GIỜ** ⏰',
             threshold: 5000,
             embedColor: '#FF0000'
         },
-        winnerCount: 1, // Mặc định 1 người thắng
-        exemptPermissions: [], // Không loại trừ ai
-        exemptMembers: () => false, // Không loại trừ thành viên nào
-        isDrop: false, // Không phải drop mode (first-come-first-serve)
+        winnerCount: 1,
+        exemptMembers: () => false,
+        isDrop: false
     }
 });
 client.giveawaysManager = manager;
 
-// Event handler khi bot sẵn sàng
+//-----------------------------------------------//
+// 🚀 BOT READY + ĐĂNG KÝ LỆNH
+//-----------------------------------------------//
 client.once(Events.ClientReady, async (readyClient) => {
-    console.log(`✅ Bot đã sẵn sàng! Đăng nhập với tên ${readyClient.user.tag}`);
-    
-    // Đăng ký lệnh slash commands
-    const giveawayCommand = {
-        name: 'giveaway',
-        description: 'Tạo một giveaway mới',
-        options: [
-            {
-                name: 'time',
-                description: 'Thời gian giveaway (vd: 1m, 1h, 1d, 1w)',
-                type: ApplicationCommandOptionType.String,
-                required: true
-            },
-            {
-                name: 'winners',
-                description: 'Số người chiến thắng',
-                type: ApplicationCommandOptionType.Integer,
-                required: true
-            },
-            {
-                name: 'prize',
-                description: 'Phần thưởng/Chú thích cho giveaway',
-                type: ApplicationCommandOptionType.String,
-                required: true
-            }
-        ]
-    };
+    console.log(`✅ Bot đã sẵn sàng! (${readyClient.user.tag})`);
 
-    try {
-        // Prepare both commands
-        const avatarsCommand = {
-            name: 'avatars',
-            description: 'Hiển thị avatar của người được chọn',
+    await client.application.commands.set([
+        {
+            name: 'giveaway',
+            description: 'Tạo một giveaway mới',
             options: [
-                {
-                    name: 'user',
-                    description: 'Chọn người dùng để xem avatar (mặc định là bạn)',
-                    type: ApplicationCommandOptionType.User,
-                    required: false
-                }
+                { name: 'time', description: 'Thời gian (vd: 1m, 1h, 1d)', type: ApplicationCommandOptionType.String, required: true },
+                { name: 'winners', description: 'Số người chiến thắng', type: ApplicationCommandOptionType.Integer, required: true },
+                { name: 'prize', description: 'Phần thưởng hoặc mô tả', type: ApplicationCommandOptionType.String, required: true }
             ]
-        };
-
-        const commands = [giveawayCommand, avatarsCommand];
-
-        // Chỉ đăng ký global commands để tránh duplicate
-        await client.application.commands.set(commands);
-
-        // Xóa các lệnh đã đăng ký trên từng guild (nếu có) để tránh hiển thị trùng lặp
-        // Một vài server có thể còn lưu lệnh dạng guild-scoped; xoá chúng để chỉ dùng global
-        for (const [guildId, guild] of client.guilds.cache) {
-            try {
-                await guild.commands.set([]);
-            } catch (err) {
-                // Nếu bot không có quyền trên guild hoặc lỗi khác, log và tiếp tục
-                console.warn(`Không thể xóa lệnh của guild ${guildId}:`, err.message);
-            }
         }
+    ]);
 
-        console.log('✅ Đã đăng ký lệnh slash commands thành công!');
-    } catch (error) {
-        console.error('❌ Lỗi khi đăng ký slash command:', error);
-    }
+    console.log('✅ Slash command đã đăng ký!');
 });
 
-// Xử lý slash commands
+//-----------------------------------------------//
+// 🎉 LỆNH /GIVEAWAY
+//-----------------------------------------------//
 client.on(Events.InteractionCreate, async interaction => {
-    if (!interaction.isCommand()) return;
+    if (!interaction.isCommand() || interaction.commandName !== 'giveaway') return;
+    const ms = require('ms');
 
-    if (interaction.commandName === 'giveaway') {
-        // Kiểm tra quyền của người dùng
-        if (!interaction.member.permissions.has('ManageMessages')) {
-            return interaction.reply({
-                content: '❌ Bạn không có quyền tạo giveaway!',
-                ephemeral: true
-            });
+    if (!interaction.member.permissions.has('ManageMessages'))
+        return interaction.reply({ content: '❌ Bạn không có quyền tạo giveaway!', ephemeral: true });
+
+    const duration = ms(interaction.options.getString('time'));
+    const winnerCount = interaction.options.getInteger('winners');
+    const prize = interaction.options.getString('prize');
+
+    if (!duration || duration > ms('7d'))
+        return interaction.reply({ content: '❌ Thời gian không hợp lệ (tối đa 7 ngày).', ephemeral: true });
+
+    //-----------------------------------------------//
+    // 🔢 SINH MÃ GIVEAWAY 10 SỐ
+    //-----------------------------------------------//
+    const code = Math.floor(1000000000 + Math.random() * 9000000000).toString();
+
+    //-----------------------------------------------//
+    // 🎁 TẠO GIVEAWAY
+    //-----------------------------------------------//
+    const giveaway = await client.giveawaysManager.start(interaction.channel, {
+        duration,
+        winnerCount,
+        prize,
+        hostedBy: interaction.user.toString(),
+        data: { code, ownerId: interaction.user.id },
+        messages: {
+            giveaway: '🎉 **GIVEAWAY** 🎉',
+            giveawayEnded: '🎉 **GIVEAWAY ĐÃ KẾT THÚC** 🎉',
+            inviteToParticipate: 'Nhấn 🎉 để tham gia!',
+            drawing: '⏳ Thời gian còn lại: **{duration}**',
+            hostedBy: '🎀 Tổ chức bởi: {this.hostedBy}',
+            winners: '🏆 Người chiến thắng:',
+            endedAt: '⏰ Kết thúc vào',
+            noWinner: '😢 Không có ai tham gia!'
         }
+    });
 
-        const duration = interaction.options.getString('time');
-        const winnerCount = interaction.options.getInteger('winners');
-        const prize = interaction.options.getString('prize');
+    //-----------------------------------------------//
+    // 💌 GỬI MÃ NGAY LẬP TỨC CHO NGƯỜI TẠO
+    //-----------------------------------------------//
+    let sent = false;
+    try {
+        await interaction.user.send(
+            `🎟️ **MÃ GIVEAWAY CỦA BẠN:** \`${code}\`\n` +
+            `📦 Phần thưởng: ${prize}\n` +
+            `🕒 Thời gian: ${formatTime(duration)}\n\n` +
+            `Lệnh quản lý:\n` +
+            `• \`!fix ${code}\` → chỉnh sửa\n` +
+            `• \`!stop ${code}\` → dừng\n` +
+            `• \`!random ${code}\` → random lại`
+        );
+        sent = true;
+    } catch { sent = false; }
 
-        // Chuyển đổi thời gian từ string sang milliseconds
-        const ms = require('ms');
-        const durationMs = ms(duration);
+    await interaction.reply({
+        content:
+            `✅ Giveaway đã được tạo thành công!\n` +
+            (sent
+                ? `💌 Mã giveaway đã được gửi riêng cho bạn qua DM.`
+                : `⚠️ Không thể gửi DM — đây là mã của bạn: **${code}**`) +
+            `\n📜 Dùng \`!fix ${code}\`, \`!stop ${code}\`, hoặc \`!random ${code}\` để quản lý.`,
+        ephemeral: true
+    });
+});
 
-        if (!durationMs || durationMs > ms('7d')) {
-            return interaction.reply({
-                content: '❌ Thời gian không hợp lệ! Vui lòng sử dụng định dạng: 1m, 1h, 1d (tối đa 7 ngày)',
-                ephemeral: true
-            });
-        }
+//-----------------------------------------------//
+// 🧩 LỆNH QUẢN LÝ GIVEAWAY BẰNG MÃ
+//-----------------------------------------------//
+function findGiveawayByCode(manager, code) {
+    return manager.giveaways.find(g => g.data && g.data.code === code);
+}
 
-        if (winnerCount < 1) {
-            return interaction.reply({
-                content: '❌ Số người chiến thắng phải lớn hơn 0!',
-                ephemeral: true
-            });
-        }
+client.on(Events.MessageCreate, async message => {
+    if (message.author.bot) return;
 
-        await interaction.deferReply({ ephemeral: true });
+    const args = message.content.trim().split(/ +/);
+    const command = args.shift()?.toLowerCase();
+    const code = args[0];
+    if (!code) return;
 
-        // Tạo embed cho giveaway (Cute Pastel style)
-        const giveawayEmbed = new EmbedBuilder()
-            .setColor(0xFFB6C1)
-            .setTitle('🌸 GIVEAWAY DỄ THƯƠNG 🌸')
-            .setDescription(`${prize}\n\nThời gian: ${formatTime(durationMs)}\nSố người chiến thắng: ${winnerCount}\n\nNhấn vào icon để tham gia nha`)
-                // Use a larger size for the thumbnail so the avatar appears bigger in the embed
-                .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true, size: 2048 }))
-            .setFooter({ 
-                text: `🎀 Pastel Giveaway - Tổ chức bởi: ${interaction.user.tag}`, 
-                iconURL: interaction.user.displayAvatarURL({ dynamic: true })
-            })
-            .setTimestamp(Date.now() + durationMs);
+    const giveaway = findGiveawayByCode(client.giveawaysManager, code);
+    if (!giveaway || message.author.id !== giveaway.data.ownerId) return;
 
-        // Tạo giveaway mới
-        client.giveawaysManager.start(interaction.channel, {
-            duration: durationMs,
-            winnerCount: winnerCount, // Đảm bảo số người thắng đúng với input
-            prize,
-            hostedBy: interaction.user.toString(),
-            embedColor: '#FF1493',
-            embedColorEnd: '#000000',
-            // Provide a larger thumbnail and an image version so the giveaway post shows a bigger avatar
-            thumbnail: interaction.user.displayAvatarURL({ dynamic: true, size: 2048 }),
-            image: interaction.user.displayAvatarURL({ dynamic: true, size: 2048 }),
-            exemptPermissions: [], // Không loại trừ ai
-            exemptMembers: () => false, // Không loại trừ thành viên nào
-            messages: {
-                // Use the provided giveaway header emoji and participation emoji
-                giveaway: '<a:1255341894687260775:1433317867293642858> **GIVEAWAY** <a:1255341894687260775:1433317867293642858>',
-                giveawayEnded: '<a:1255341894687260775:1433317867293642858> **GIVEAWAY ĐÃ KẾT THÚC** <a:1255341894687260775:1433317867293642858>',
-                // Add a clock icon to the countdown so it's more visible
-                timeRemaining: '⏰ Thời gian còn lại: **{duration}**',
-                inviteToParticipate: 'Nhấn vào icon để tham gia nha',
-                winMessage: '<a:1255341894687260775:1433317867293642858> Chúc mừng {winners}! Bạn đã thắng **{this.prize}**! <a:1255341894687260775:1433317867293642858>',
-                embedFooter: '{this.winnerCount} người thắng',
-                noWinner: 'Giveaway đã kết thúc, không có người tham gia hợp lệ 😔',
-                hostedBy: '👑 Tổ chức bởi: {this.hostedBy}',
-                winners: '<a:1261960933270618192:1433286685189341204> Người chiến thắng:',
-                endedAt: '⏰ Kết thúc vào',
-                drawing: '⏰ Còn: {timestamp}',
-                dropMessage: 'Hãy là người đầu tiên react 🎉 để thắng!',
-                units: {
-                    seconds: 'giây',
-                    minutes: 'phút',
-                    hours: 'giờ',
-                    days: 'ngày'
-                }
-            }
-        });
+    const ms = require('ms');
 
-        await interaction.editReply({
-            content: '✅ Đã tạo giveaway thành công!',
-            ephemeral: true
-        });
+    if (command === '!fix') {
+        const text = args.slice(1).join(' ');
+        let newPrize = giveaway.prize, newWinners = giveaway.winnerCount, addTime = 0;
+        if (text.includes('prize')) newPrize = text.split('prize = ')[1] || newPrize;
+        if (text.includes('winners')) newWinners = parseInt(text.split('winners = ')[1]) || newWinners;
+        if (text.includes('time')) addTime = ms(text.split('time = ')[1]) || 0;
+        await client.giveawaysManager.edit(giveaway.messageId, { newPrize, newWinnerCount: newWinners, addTime });
+        return message.reply(`✅ Đã chỉnh sửa giveaway **${code}**!`);
     }
 
-    if (interaction.commandName === 'avatars') {
-        // Get the user option (or default to the interaction user)
-        const target = interaction.options.getUser('user') || interaction.user;
+    if (command === '!stop') {
+        await client.giveawaysManager.end(giveaway.messageId);
+        return message.reply(`🛑 Giveaway **${code}** đã bị dừng.`);
+    }
 
-        // Build avatar URLs in different formats
-        const pngUrl = target.displayAvatarURL({ extension: 'png', size: 1024, dynamic: true });
-        const jpgUrl = target.displayAvatarURL({ extension: 'jpg', size: 1024, dynamic: true });
-        const webpUrl = target.displayAvatarURL({ extension: 'webp', size: 1024, dynamic: true });
-
-        const avatarEmbed = new EmbedBuilder()
-            .setTitle(`Avatar for ${target.tag}`)
-            .setDescription(`Link as\n[png](${pngUrl}) | [jpg](${jpgUrl}) | [webp](${webpUrl})`)
-            .setImage(pngUrl)
-            .setFooter({ text: "You can now change Carl-bot's profile picture and banner with premium!!" })
-            .setColor('#2F3136');
-
-        return interaction.reply({ embeds: [avatarEmbed] });
+    if (command === '!random') {
+        await client.giveawaysManager.reroll(giveaway.messageId);
+        return message.reply(`🎲 Giveaway **${code}** đã được random lại.`);
     }
 });
 
-// Xử lý lỗi kết nối
-client.on('error', error => {
-    console.error('Lỗi kết nối Discord:', error);
+//-----------------------------------------------//
+// 🔁 LỆNH KHỞI ĐỘNG LẠI (CHỈ CHO CHỦ BOT)
+//-----------------------------------------------//
+client.on(Events.MessageCreate, async message => {
+    if (message.author.bot) return;
+    if (message.content === '!restart' && message.author.id === '1409222785154416651') {
+        await message.reply('🔄 Bot đang khởi động lại...');
+        process.exit(0);
+    }
 });
 
-// Đăng nhập vào Discord
-client.login(process.env.TOKEN).catch(error => {
-    console.error('❌ Lỗi đăng nhập:', error.message);
-    console.log('⚠️ Hãy kiểm tra lại TOKEN trong file .env');
-});
+client.login(process.env.TOKEN).catch(err => console.error('❌ Lỗi đăng nhập:', err.message));
