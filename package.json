@@ -2,10 +2,7 @@
   "name": "meyia",
   "version": "0.0.1",
   "description": "",
-  "keywords": [
-    "meyia",
-    "meyia"
-  ],
+  "keywords": ["meyia", "meyia"],
   "homepage": "https://github.com/nanh208/Meyia#readme",
   "bugs": {
     "url": "https://github.com/nanh208/Meyia/issues"
@@ -19,7 +16,7 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "test": "https://github.com/nanh208/Meyia.git"
+    "start": "node index.js"
   },
   "dependencies": {
     "axios": "^1.13.1",
