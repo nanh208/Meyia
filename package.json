@@ -1,0 +1,30 @@
+{
+  "name": "meyia",
+  "version": "0.0.1",
+  "description": "",
+  "keywords": [
+    "meyia",
+    "meyia"
+  ],
+  "homepage": "https://github.com/nanh208/Meyia#readme",
+  "bugs": {
+    "url": "https://github.com/nanh208/Meyia/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nanh208/Meyia.git"
+  },
+  "license": "ISC",
+  "author": "meyia",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "https://github.com/nanh208/Meyia.git"
+  },
+  "dependencies": {
+    "discord-giveaways": "^6.0.1",
+    "discord.js": "^14.24.1",
+    "dotenv": "^16.3.1",
+    "ms": "^2.1.3"
+  }
+}
