@@ -114,10 +114,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         await interaction.deferReply({ ephemeral: true });
 
-        // 🔢 Sinh mã giveaway
+        // 🔢 Mã giveaway
         const code = Math.floor(1000000000 + Math.random() * 9000000000).toString();
 
-        // 🎁 Embed Custom
+        // 🧱 Embed tùy chỉnh
         const embed = new EmbedBuilder()
             .setColor("#FFB6C1")
             .setTitle("<a:1255341894687260775:1433317867293642858>  ＧＩＶＥＡＷＡＹ  <a:1255341894687260775:1433317867293642858>")
@@ -132,38 +132,36 @@ client.on(Events.InteractionCreate, async (interaction) => {
             .setImage(interaction.client.user.displayAvatarURL({ size: 512 }))
             .setFooter({ text: `Mã giveaway: ${code}` });
 
-        // 🪄 Gửi message giveaway
+        // 📤 Gửi message
         const msg = await interaction.channel.send({ embeds: [embed] });
         await msg.react("<a:1261960933270618192:1433286685189341204>");
 
-        // 🔖 Lưu quản lý giveaway
-        await client.giveawaysManager.start(interaction.channel, {
-            duration,
-            winnerCount,
+        // 🪄 Ghi giveaway không tạo embed phụ
+        manager.giveaways.push({
+            messageId: msg.id,
+            channelId: msg.channel.id,
+            guildId: msg.guild.id,
             prize,
+            winnerCount,
             hostedBy: interaction.user.toString(),
-            messages: {
-                giveaway: "",
-                giveawayEnded: "🎉 **GIVEAWAY ĐÃ KẾT THÚC!** 🎉",
-                drawing: "⏳ Thời gian còn lại: {duration}",
-                winMessage: "🎉 Chúc mừng {winners}! Bạn đã thắng **{this.prize}**!",
-                inviteToParticipate: "",
-                hostedBy: "👑 Người tổ chức: {this.hostedBy}",
-                winners: "🏆 Người chiến thắng:",
-                endedAt: "⏰ Kết thúc vào"
-            },
-            data: { code, ownerId: interaction.user.id }
+            startAt: Date.now(),
+            endAt: Date.now() + duration,
+            ended: false,
+            data: { code, ownerId: interaction.user.id },
+            messages: {} // ❗ Không cho tạo embed mặc định
         });
+        await manager.saveGiveaway(msg.id, manager.giveaways[manager.giveaways.length - 1]);
 
-        // 📩 Gửi DM mã cho người tạo
+        // 💌 DM mã
         try {
             await interaction.user.send(
-                `🎟️ **MÃ GIVEAWAY CỦA BẠN:** \`${code}\`\n📦 Phần thưởng: ${prize}\n🕒 Thời gian: ${formatTime(duration)}\n\n` +
-                `Lệnh quản lý:\n• \`!fix ${code}\`\n• \`!stop ${code}\`\n• \`!random ${code}\``
+                `🎟️ **MÃ GIVEAWAY CỦA BẠN:** \`${code}\`\n📦 Phần thưởng: ${prize}\n🕒 Thời gian: ${formatTime(duration)}`
             );
-        } catch { }
+        } catch {}
 
-        await interaction.editReply({ content: `✅ Giveaway đã được tạo thành công!\n💌 Mã của bạn: **${code}**` });
+        await interaction.editReply({
+            content: `✅ Giveaway đã được tạo!\n💌 Mã: **${code}**`
+        });
     }
 });
 
