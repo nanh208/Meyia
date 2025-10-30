@@ -2,7 +2,10 @@
   "name": "meyia",
   "version": "0.0.1",
   "description": "",
-  "keywords": ["meyia", "meyia"],
+  "keywords": [
+    "meyia",
+    "meyia"
+  ],
   "homepage": "https://github.com/nanh208/Meyia#readme",
   "bugs": {
     "url": "https://github.com/nanh208/Meyia/issues"
@@ -26,5 +29,8 @@
     "fs": "^0.0.1-security",
     "ms": "^2.1.3",
     "openai": "^6.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
   }
 }
