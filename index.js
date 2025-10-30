@@ -37,7 +37,8 @@ const manager = new GiveawaysManager(client, {
         botsCanWin: false,
         embedColor: '#FF1493',
         embedColorEnd: '#000000',
-        reaction: '<:125534064624861600611433317989406605383:125534064624861600611433317989406605383>',
+        // Reaction (icon users should react with to enter) — use provided participation emoji
+        reaction: '<a:1261960933270618192:1433286685189341204>',
         lastChance: {
             enabled: true,
             content: '⏰ **HẾT GIỜ** ⏰',
@@ -101,6 +102,18 @@ client.once(Events.ClientReady, async (readyClient) => {
 
         // Chỉ đăng ký global commands để tránh duplicate
         await client.application.commands.set(commands);
+
+        // Xóa các lệnh đã đăng ký trên từng guild (nếu có) để tránh hiển thị trùng lặp
+        // Một vài server có thể còn lưu lệnh dạng guild-scoped; xoá chúng để chỉ dùng global
+        for (const [guildId, guild] of client.guilds.cache) {
+            try {
+                await guild.commands.set([]);
+            } catch (err) {
+                // Nếu bot không có quyền trên guild hoặc lỗi khác, log và tiếp tục
+                console.warn(`Không thể xóa lệnh của guild ${guildId}:`, err.message);
+            }
+        }
+
         console.log('✅ Đã đăng ký lệnh slash commands thành công!');
     } catch (error) {
         console.error('❌ Lỗi khi đăng ký slash command:', error);
@@ -148,8 +161,9 @@ client.on(Events.InteractionCreate, async interaction => {
         const giveawayEmbed = new EmbedBuilder()
             .setColor(0xFFB6C1)
             .setTitle('🌸 GIVEAWAY DỄ THƯƠNG 🌸')
-            .setDescription(`${prize}\n\nThời gian: ${formatTime(durationMs)}\nSố người chiến thắng: ${winnerCount}\n\nNhấn 🎀 để tham gia nhaaaa ✨`)
-            .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
+            .setDescription(`${prize}\n\nThời gian: ${formatTime(durationMs)}\nSố người chiến thắng: ${winnerCount}\n\nNhấn vào icon để tham gia nha`)
+                // Use a larger size for the thumbnail so the avatar appears bigger in the embed
+                .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true, size: 2048 }))
             .setFooter({ 
                 text: `🎀 Pastel Giveaway - Tổ chức bởi: ${interaction.user.tag}`, 
                 iconURL: interaction.user.displayAvatarURL({ dynamic: true })
@@ -164,21 +178,25 @@ client.on(Events.InteractionCreate, async interaction => {
             hostedBy: interaction.user.toString(),
             embedColor: '#FF1493',
             embedColorEnd: '#000000',
-            thumbnail: interaction.user.displayAvatarURL({ dynamic: true }),
+            // Provide a larger thumbnail and an image version so the giveaway post shows a bigger avatar
+            thumbnail: interaction.user.displayAvatarURL({ dynamic: true, size: 2048 }),
+            image: interaction.user.displayAvatarURL({ dynamic: true, size: 2048 }),
             exemptPermissions: [], // Không loại trừ ai
             exemptMembers: () => false, // Không loại trừ thành viên nào
             messages: {
-                giveaway: '<:125534064624861600611433317989406605383:125534064624861600611433317989406605383> **GIVEAWAY** <:125534064624861600611433317989406605383:125534064624861600611433317989406605383>',
-                giveawayEnded: '<:125534064624861600611433317989406605383:125534064624861600611433317989406605383> **GIVEAWAY ĐÃ KẾT THÚC** <:125534064624861600611433317989406605383:125534064624861600611433317989406605383>',
-                timeRemaining: 'Thời gian còn lại: **{duration}**',
-                inviteToParticipate: 'React với <:125534064624861600611433317989406605383:125534064624861600611433317989406605383> để tham gia!',
-                winMessage: '<:125534189468726077514333178672936428581:125534189468726077514333178672936428581> Chúc mừng {winners}! Bạn đã thắng **{this.prize}**! <:125534189468726077514333178672936428581:125534189468726077514333178672936428581>',
+                // Use the provided giveaway header emoji and participation emoji
+                giveaway: '<a:1255341894687260775:1433317867293642858> **GIVEAWAY** <a:1255341894687260775:1433317867293642858>',
+                giveawayEnded: '<a:1255341894687260775:1433317867293642858> **GIVEAWAY ĐÃ KẾT THÚC** <a:1255341894687260775:1433317867293642858>',
+                // Add a clock icon to the countdown so it's more visible
+                timeRemaining: '⏰ Thời gian còn lại: **{duration}**',
+                inviteToParticipate: 'Nhấn vào icon để tham gia nha',
+                winMessage: '<a:1255341894687260775:1433317867293642858> Chúc mừng {winners}! Bạn đã thắng **{this.prize}**! <a:1255341894687260775:1433317867293642858>',
                 embedFooter: '{this.winnerCount} người thắng',
                 noWinner: 'Giveaway đã kết thúc, không có người tham gia hợp lệ 😔',
                 hostedBy: '👑 Tổ chức bởi: {this.hostedBy}',
-                winners: '<:125534064624861600611433317989406605383:125534064624861600611433317989406605383> Người chiến thắng:',
+                winners: '<a:1261960933270618192:1433286685189341204> Người chiến thắng:',
                 endedAt: '⏰ Kết thúc vào',
-                drawing: 'Còn: {timestamp}',
+                drawing: '⏰ Còn: {timestamp}',
                 dropMessage: 'Hãy là người đầu tiên react 🎉 để thắng!',
                 units: {
                     seconds: 'giây',
