@@ -12,7 +12,6 @@ const {
 } = require("discord.js");
 const { GiveawaysManager } = require("discord-giveaways");
 const ms = require("ms");
-const { OpenAI } = require("openai");
 
 // ----------- LOAD CONFIG -----------
 const activityPath = path.join(__dirname, "config", "activity.json");
@@ -42,11 +41,6 @@ const client = new Client({
 
 // ----------- SETTINGS -----------
 const OWNER_ID = process.env.OWNER_ID || "1409222785154416651";
-const AI_ENABLED = false;
-const rawKey = process.env.OPENAI_API_KEY;
-const openaiOptions = {};
-if (rawKey) openaiOptions.apiKey = rawKey;
-const openai = new OpenAI(openaiOptions);
 let mutedChannels = new Set();
 
 // ----------- HELPERS -----------
@@ -76,7 +70,7 @@ function hasAdminPermission(i) {
   return false;
 }
 function getStatusString() {
-  return `📡 **Trạng thái bot:**\n🧠 Chat AI: ${AI_ENABLED ? "✅ Bật" : "🔒 Tắt"}\n🔇 Kênh mute: ${mutedChannels.size ? Array.from(mutedChannels).map(id => `<#${id}>`).join(", ") : "Không"}`;
+  return `📡 **Trạng thái bot:**\n🧠 Chat AI: 🔒 Tắt\n🔇 Kênh mute: ${mutedChannels.size ? Array.from(mutedChannels).map(id => `<#${id}>`).join(", ") : "Không"}`;
 }
 
 // ----------- GIVEAWAY MANAGER -----------
@@ -149,86 +143,40 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   if (cmd === "status") return interaction.reply({ content: getStatusString(), ephemeral: true });
 
-  // 🎁 GIVEAWAY (phiên bản mới)
+  // 🎁 GIVEAWAY
   if (cmd === "giveaway") {
     if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages))
-      return interaction.reply({ content: "❌ Bạn không có quyền tạo giveaway!", ephemeral: true });
-
+      return interaction.reply({ content: "❌ Không đủ quyền.", ephemeral: true });
     const duration = ms(interaction.options.getString("time"));
     const winnerCount = interaction.options.getInteger("winners");
     const prize = interaction.options.getString("prize");
-    if (!duration || duration > ms("7d"))
-      return interaction.reply({ content: "❌ Thời gian không hợp lệ (tối đa 7 ngày).", ephemeral: true });
-
+    if (!duration || duration > ms("7d")) return interaction.reply({ content: "❌ Thời gian không hợp lệ.", ephemeral: true });
     await interaction.deferReply({ ephemeral: true });
 
     const code = Math.floor(1000000000 + Math.random() * 9000000000).toString();
     const endTime = Date.now() + duration;
-
     const embed = new EmbedBuilder()
       .setColor("#FFB6C1")
-      .setTitle("<a:1255341894687260775:1433317867293642858> 🎀 ＧＩＶＥＡＷＡＹ 🎀 <a:1255341894687260775:1433317867293642858>")
-      .setDescription(
-        `🎁 **PHẦN THƯỞNG:** **${prize}**\n\n` +
-        `👑 **Người tổ chức:** ${interaction.user}\n` +
-        `<a:12553406462486160061:1433317989406605383> Bấm emoji <a:1261960933270618192:1433286685189341204> để tham gia!\n\n` +
-        `🎯 **Số lượng giải:** ${winnerCount}\n` +
-        `⏳ **Còn lại:** ${formatTime(endTime - Date.now())}`
-      )
-      .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
-      .setFooter({ text: `🎟️ Mã giveaway: ${code}` });
-
+      .setTitle("🎀 GIVEAWAY 🎀")
+      .setDescription(`🎁 **${prize}**\n👑 Người tổ chức: ${interaction.user}\n🎯 Giải: ${winnerCount}\n⏳ Còn lại: ${formatTime(duration)}`)
+      .setFooter({ text: `Mã: ${code}` });
     const msg = await interaction.channel.send({ embeds: [embed] });
-    try {
-      await msg.react("<a:1261960933270618192:1433286685189341204>");
-    } catch {}
-
-    const updateEmbed = async () => {
-      const remaining = endTime - Date.now();
-      const newEmbed = EmbedBuilder.from(embed).setDescription(
-        `🎁 **PHẦN THƯỞNG:** **${prize}**\n\n` +
-        `👑 **Người tổ chức:** ${interaction.user}\n` +
-        `<a:12553406462486160061:1433317989406605383> Bấm emoji <a:1261960933270618192:1433286685189341204> để tham gia!\n\n` +
-        `🎯 **Số lượng giải:** ${winnerCount}\n` +
-        `⏳ **Còn lại:** ${formatTime(Math.max(0, remaining))}`
-      );
-      try { await msg.edit({ embeds: [newEmbed] }); } catch {}
-    };
-
+    try { await msg.react("🎉"); } catch {}
     const countdown = setInterval(async () => {
-      const remaining = endTime - Date.now();
-      if (remaining <= 0) {
+      const remain = endTime - Date.now();
+      if (remain <= 0) {
         clearInterval(countdown);
         const fetched = await interaction.channel.messages.fetch(msg.id);
-        const reaction = fetched.reactions.cache.get("<a:1261960933270618192:1433286685189341204>") || fetched.reactions.cache.first();
-        const users = reaction ? (await reaction.users.fetch()).filter(u => !u.bot).map(u => u) : [];
-
-        if (!users.length) {
-          const embedEnd = EmbedBuilder.from(embed)
-            .setColor("#555")
-            .setTitle("🎀 GIVEAWAY KẾT THÚC 🎀")
-            .setDescription(`🎁 **${prize}**\n😢 Không có ai tham gia.\n👑 **${interaction.user}**`);
-          await fetched.edit({ embeds: [embedEnd] });
-          return interaction.followUp({ content: "✅ Giveaway kết thúc, không ai tham gia.", ephemeral: true });
-        }
-
-        const shuffled = users.sort(() => Math.random() - 0.5);
-        const winners = shuffled.slice(0, Math.min(winnerCount, shuffled.length));
-        const winnersText = winners.map(w => `<@${w.id}>`).join(", ");
-
-        const embedEnd = EmbedBuilder.from(embed)
-          .setColor("#00FF7F")
-          .setTitle("💫 GIVEAWAY ĐÃ KẾT THÚC 💫")
-          .setDescription(`🎁 **${prize}**\n🏆 Người thắng: ${winnersText}\n👑 Người tổ chức: ${interaction.user}`);
-        await fetched.edit({ embeds: [embedEnd] });
-        await fetched.reply(`🎊 Chúc mừng ${winnersText} đã thắng **${prize}** 🎉`);
-        return interaction.followUp({ content: "✅ Giveaway kết thúc!", ephemeral: true });
+        const users = (await fetched.reactions.cache.first().users.fetch()).filter(u => !u.bot);
+        if (!users.size) return fetched.reply("Không có ai tham gia.");
+        const win = users.random(winnerCount);
+        fetched.reply(`🏆 Chúc mừng ${Array.isArray(win) ? win.map(u => u.toString()).join(", ") : win}! Đã thắng **${prize}** 🎉`);
       } else {
-        await updateEmbed();
+        const upd = EmbedBuilder.from(embed).setDescription(`🎁 **${prize}**\n👑 ${interaction.user}\n🎯 Giải: ${winnerCount}\n⏳ Còn lại: ${formatTime(remain)}`);
+        await msg.edit({ embeds: [upd] }).catch(() => {});
       }
-    }, 10000);
-
-    return interaction.editReply({ content: `✅ Giveaway đã được tạo!\n💌 Mã: **${code}**` });
+    }, 10_000);
+    return interaction.editReply({ content: `✅ Giveaway tạo thành công. Mã: ${code}` });
   }
 
   // 📊 ACTIVITY
@@ -265,7 +213,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return interaction.reply({ content: "📘 Dùng /activity setup|enable|disable.", ephemeral: true });
   }
 
-  // ----------- Các lệnh khác -----------
+  // ⚙️ Các lệnh khác
   if (cmd === "ping") {
     const sent = await interaction.reply({ content: "Pinging...", fetchReply: true });
     const diff = sent.createdTimestamp - interaction.createdTimestamp;
