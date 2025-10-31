@@ -234,8 +234,105 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   }
 
-  // =================== MUSIC COMMANDS ===================
-  // ... giữ nguyên tất cả music commands từ /play đến /volume như bạn đã gửi ...
+// =================== MUSIC COMMANDS =================== //
+if (cmd === "play") {
+  const query = interaction.options.getString("query");
+  const voice = interaction.member.voice.channel;
+
+  if (!voice)
+    return interaction.reply({ content: "❌ Bạn cần vào kênh voice trước!", ephemeral: true });
+
+  try {
+    const result = await client.player.search(query, {
+      requestedBy: interaction.user,
+      searchEngine: QueryType.AUTO
+    });
+
+    if (!result || !result.tracks.length)
+      return interaction.reply({ content: "😢 Không tìm thấy bài nào.", ephemeral: true });
+
+    const queue = await client.player.nodes.create(interaction.guild, {
+      metadata: { channel: interaction.channel },
+      leaveOnEmpty: true,
+      leaveOnEnd: true,
+      leaveOnStop: true
+    });
+
+    if (!queue.connection) await queue.connect(voice);
+    result.playlist ? queue.addTrack(result.tracks) : queue.addTrack(result.tracks[0]);
+    if (!queue.node.isPlaying()) await queue.node.play();
+
+    return interaction.reply({
+      content: `🎶 Đã thêm **${result.tracks[0].title}** vào hàng chờ.`
+    });
+  } catch (err) {
+    console.error(err);
+    return interaction.reply({ content: "❌ Lỗi khi phát nhạc!", ephemeral: true });
+  }
+}
+
+if (cmd === "stop") {
+  const queue = client.player.nodes.get(interaction.guild.id);
+  if (!queue) return interaction.reply({ content: "❌ Không có bài nào đang phát.", ephemeral: true });
+  queue.delete();
+  return interaction.reply("🛑 Dừng nhạc và rời voice.");
+}
+
+if (cmd === "skip") {
+  const queue = client.player.nodes.get(interaction.guild.id);
+  if (!queue || !queue.node.isPlaying())
+    return interaction.reply({ content: "❌ Không có bài nào đang phát.", ephemeral: true });
+  await queue.node.skip();
+  return interaction.reply("⏭️ Đã bỏ qua bài hiện tại.");
+}
+
+if (cmd === "pause") {
+  const queue = client.player.nodes.get(interaction.guild.id);
+  if (!queue || !queue.node.isPlaying())
+    return interaction.reply({ content: "❌ Không có bài nào đang phát.", ephemeral: true });
+  queue.node.pause();
+  return interaction.reply("⏸️ Đã tạm dừng phát nhạc.");
+}
+
+if (cmd === "resume") {
+  const queue = client.player.nodes.get(interaction.guild.id);
+  if (!queue)
+    return interaction.reply({ content: "❌ Không có queue nào đang hoạt động.", ephemeral: true });
+  queue.node.resume();
+  return interaction.reply("▶️ Tiếp tục phát nhạc.");
+}
+
+if (cmd === "queue") {
+  const queue = client.player.nodes.get(interaction.guild.id);
+  if (!queue || !queue.tracks || queue.tracks.data.length === 0)
+    return interaction.reply({ content: "📭 Queue đang trống." });
+
+  const tracks = queue.tracks.data
+    .slice(0, 10)
+    .map((track, i) => `${i + 1}. [${track.title}](${track.url}) — <@${track.requestedBy?.id || "?"}>`)
+    .join("\n");
+
+  const embed = new EmbedBuilder()
+    .setColor(MAIN_COLOR)
+    .setTitle("🎶 Hàng chờ hiện tại:")
+    .setDescription(tracks)
+    .setFooter({ text: queue.tracks.data.length > 10 ? `...và ${queue.tracks.data.length - 10} bài khác` : "Hết" });
+
+  return interaction.reply({ embeds: [embed] });
+}
+
+if (cmd === "volume") {
+  const value = interaction.options.getInteger("value");
+  if (isNaN(value) || value < 1 || value > 200)
+    return interaction.reply({ content: "⚠️ Nhập số từ 1 đến 200!", ephemeral: true });
+
+  const queue = client.player.nodes.get(interaction.guild.id);
+  if (!queue)
+    return interaction.reply({ content: "❌ Không có bài nào đang phát.", ephemeral: true });
+
+  queue.node.setVolume(value);
+  return interaction.reply(`🔊 Âm lượng đã đặt là **${value}%**`);
+}
 
   // =================== FUN & UTIL ===================
   // ping, love, rps, 8ball, mood, quote, say, avatar, xoachat
