@@ -138,7 +138,12 @@ client.once(Events.ClientReady, async () => {
     { name: "info", description: "Thông tin bot" },
 
     // ---------- Music slash commands ----------
-    { name: "play", description: "Phát nhạc (YouTube Music / YouTube)", options: [{ name: "query", description: "Tên bài / link / playlist", type: ApplicationCommandOptionType.String, required: true }] },
+    // /play nhận 2 tuỳ chọn: link (URL) và ten (tên bài/playlist). Không bắt buộc trên discord, kiểm tra trong handler (ít nhất 1 tuỳ chọn).
+    { name: "play", description: "Phát nhạc (link hoặc tên)", options: [
+      { name: "link", description: "URL bài/playlist (nếu có)", type: ApplicationCommandOptionType.String, required: false },
+      { name: "ten", description: "Tên bài/playlist (nếu không dùng link)", type: ApplicationCommandOptionType.String, required: false },
+      { name: "query", description: "Legacy: tên bài / link / playlist", type: ApplicationCommandOptionType.String, required: false }
+    ] },
     { name: "stop", description: "Dừng nhạc và rời voice" },
     { name: "skip", description: "Bỏ qua bài đang phát" },
     { name: "pause", description: "Tạm dừng phát" },
