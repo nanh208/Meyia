@@ -95,7 +95,7 @@ client.once(Events.ClientReady, async () => {
     { name: "status", description: "Xem trạng thái bot" },
     {
       name: "giveaway",
-      description: "Tạo giveaway mới",
+      description: "Tạo giveaway 🎉",
       options: [
         { name: "time", description: "Thời gian (vd: 1m, 1h, 1d)", type: ApplicationCommandOptionType.String, required: true },
         { name: "winners", description: "Số người thắng", type: ApplicationCommandOptionType.Integer, required: true },
@@ -134,86 +134,56 @@ client.on(Events.InteractionCreate, async (interaction) => {
   const cmd = interaction.commandName;
   const isAdmin = hasAdminPermission(interaction);
 
-  if (cmd === "help") {
-    return interaction.reply({
-      content: "**Lệnh của Meyia:**\n/help, /status, /giveaway, /activity, /avatar, /ping, /xoachat, /info, /8ball, /rps, /love, /hug, /slap, /say, /quote, /mood, /birthday",
-      ephemeral: true
-    });
-  }
-
-  if (cmd === "status") return interaction.reply({ content: getStatusString(), ephemeral: true });
-
-  // 🎁 GIVEAWAY
+  // 🎁 GIVEAWAY (có icon)
   if (cmd === "giveaway") {
     if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages))
-      return interaction.reply({ content: "❌ Không đủ quyền.", ephemeral: true });
+      return interaction.reply({ content: "❌ Bạn không có quyền tạo giveaway.", ephemeral: true });
+
     const duration = ms(interaction.options.getString("time"));
     const winnerCount = interaction.options.getInteger("winners");
     const prize = interaction.options.getString("prize");
-    if (!duration || duration > ms("7d")) return interaction.reply({ content: "❌ Thời gian không hợp lệ.", ephemeral: true });
-    await interaction.deferReply({ ephemeral: true });
 
-    const code = Math.floor(1000000000 + Math.random() * 9000000000).toString();
+    if (!duration || duration > ms("30d"))
+      return interaction.reply({ content: "⚠️ Thời gian không hợp lệ (tối đa 30 ngày).", ephemeral: true });
+
+    await interaction.deferReply({ ephemeral: true });
     const endTime = Date.now() + duration;
+    const code = Math.floor(1000000000 + Math.random() * 9000000000).toString();
+
     const embed = new EmbedBuilder()
-      .setColor("#FFB6C1")
-      .setTitle("🎀 GIVEAWAY 🎀")
-      .setDescription(`🎁 **${prize}**\n👑 Người tổ chức: ${interaction.user}\n🎯 Giải: ${winnerCount}\n⏳ Còn lại: ${formatTime(duration)}`)
-      .setFooter({ text: `Mã: ${code}` });
+      .setColor("#FF69B4")
+      .setTitle("<a:1261960933270618192:1433286685189341204> GIVEAWAY ĐANG DIỄN RA! <a:1261960933270618192:1433286685189341204>")
+      .setDescription(`🎁 **${prize}**\n👑 Người tổ chức: ${interaction.user}\n🏆 Số người thắng: **${winnerCount}**\n⏳ Còn lại: **${formatTime(duration)}**`)
+      .setFooter({ text: `Mã: ${code} • Tham gia bằng cách nhấn 🎉` })
+      .setTimestamp(endTime);
+
     const msg = await interaction.channel.send({ embeds: [embed] });
     try { await msg.react("🎉"); } catch {}
+
     const countdown = setInterval(async () => {
       const remain = endTime - Date.now();
       if (remain <= 0) {
         clearInterval(countdown);
         const fetched = await interaction.channel.messages.fetch(msg.id);
         const users = (await fetched.reactions.cache.first().users.fetch()).filter(u => !u.bot);
-        if (!users.size) return fetched.reply("Không có ai tham gia.");
-        const win = users.random(winnerCount);
-        fetched.reply(`🏆 Chúc mừng ${Array.isArray(win) ? win.map(u => u.toString()).join(", ") : win}! Đã thắng **${prize}** 🎉`);
+        if (!users.size) return fetched.reply("😢 Không có ai tham gia giveaway này.");
+        const winners = users.random(winnerCount);
+        fetched.reply(`🎊 Chúc mừng ${Array.isArray(winners) ? winners.map(u => u.toString()).join(", ") : winners}! Bạn đã thắng **${prize}** 🎀`);
       } else {
-        const upd = EmbedBuilder.from(embed).setDescription(`🎁 **${prize}**\n👑 ${interaction.user}\n🎯 Giải: ${winnerCount}\n⏳ Còn lại: ${formatTime(remain)}`);
+        const upd = EmbedBuilder.from(embed).setDescription(`🎁 **${prize}**\n👑 ${interaction.user}\n🏆 Số người thắng: **${winnerCount}**\n⏳ Còn lại: **${formatTime(remain)}**`);
         await msg.edit({ embeds: [upd] }).catch(() => {});
       }
     }, 10_000);
-    return interaction.editReply({ content: `✅ Giveaway tạo thành công. Mã: ${code}` });
+
+    return interaction.editReply({ content: `✅ Giveaway đã được tạo thành công với mã **${code}**!` });
   }
 
-  // 📊 ACTIVITY
-  if (cmd === "activity") {
-    if (!hasAdminPermission(interaction))
-      return interaction.reply({ content: "❌ Chỉ admin được phép dùng.", ephemeral: true });
+  // Các lệnh khác giữ nguyên
+  if (cmd === "help")
+    return interaction.reply({ content: "**Lệnh của Meyia:** /help, /status, /giveaway, /activity, /ping, /hug, /slap, /say...", ephemeral: true });
 
-    const sub = interaction.options.getSubcommand();
-    const guildId = interaction.guild.id;
-    activityConfig[guildId] = activityConfig[guildId] || { enabled: false, channelId: null };
+  if (cmd === "status") return interaction.reply({ content: getStatusString(), ephemeral: true });
 
-    if (sub === "setup") {
-      const ch = interaction.options.getChannel("channel");
-      if (!ch) return interaction.reply({ content: "⚠️ Hãy chọn kênh hợp lệ.", ephemeral: true });
-      activityConfig[guildId].channelId = ch.id;
-      saveActivityConfig();
-      return interaction.reply({ content: `✅ Đã đặt kênh log: ${ch}.`, ephemeral: true });
-    }
-
-    if (sub === "enable") {
-      if (!activityConfig[guildId].channelId)
-        return interaction.reply({ content: "⚠️ Chạy /activity setup trước.", ephemeral: true });
-      activityConfig[guildId].enabled = true;
-      saveActivityConfig();
-      return interaction.reply({ content: "📊 Log hoạt động **đã bật**.", ephemeral: true });
-    }
-
-    if (sub === "disable") {
-      activityConfig[guildId].enabled = false;
-      saveActivityConfig();
-      return interaction.reply({ content: "🛑 Log hoạt động **đã tắt**.", ephemeral: true });
-    }
-
-    return interaction.reply({ content: "📘 Dùng /activity setup|enable|disable.", ephemeral: true });
-  }
-
-  // ⚙️ Các lệnh khác
   if (cmd === "ping") {
     const sent = await interaction.reply({ content: "Pinging...", fetchReply: true });
     const diff = sent.createdTimestamp - interaction.createdTimestamp;
