@@ -566,8 +566,18 @@ client.on("messageCreate", async (message) => {
 ===================================================================== */
 
 const volumePath = path.join(__dirname, "config", "volume.json");
+// ensure config dir exists and create file if missing; safe-read JSON
+if (!fs.existsSync(path.dirname(volumePath))) fs.mkdirSync(path.dirname(volumePath), { recursive: true });
 if (!fs.existsSync(volumePath)) fs.writeFileSync(volumePath, "{}");
-let volumeConfig = JSON.parse(fs.readFileSync(volumePath, "utf8"));
+let volumeConfig = {};
+try {
+  const raw = fs.readFileSync(volumePath, "utf8") || "{}";
+  volumeConfig = JSON.parse(raw);
+} catch (e) {
+  console.warn("⚠️ volume.json parse error, resetting to {}:", e);
+  volumeConfig = {};
+  fs.writeFileSync(volumePath, "{}");
+}
 
 // Auto reconnect voice khi connection error
 client.player.on("connectionError", (queue, error) => {
@@ -627,43 +637,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
     fs.writeFileSync(volumePath, JSON.stringify(volumeConfig, null, 2));
   }
 });
-// ----- Slash command auto registration -----
-const { ApplicationCommandOptionType } = require("discord.js");
-
-const commands = [
-  {
-    name: "play",
-    description: "Phát nhạc từ YouTube hoặc YouTube Music",
-    options: [
-      {
-        name: "query",
-        description: "Tên bài hát hoặc link YouTube",
-        type: ApplicationCommandOptionType.String,
-        required: true
-      }
-    ]
-  },
-  {
-    name: "skip",
-    description: "Bỏ qua bài hát hiện tại"
-  },
-  {
-    name: "stop",
-    description: "Dừng phát nhạc và rời kênh thoại"
-  },
-  {
-    name: "queue",
-    description: "Xem danh sách phát hiện tại"
-  }
-];
-
-try {
-  await client.application.commands.set(commands);
-  console.log("✅ Slash commands đã được đăng ký thành công!");
-} catch (err) {
-  console.error("❌ Lỗi khi đăng ký slash commands:", err);
-}
-
 // -------- LOGIN -------- //
 const token = process.env.TOKEN || process.env.DISCORD_TOKEN;
 if (!token) {
