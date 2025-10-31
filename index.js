@@ -627,6 +627,42 @@ client.on(Events.InteractionCreate, async (interaction) => {
     fs.writeFileSync(volumePath, JSON.stringify(volumeConfig, null, 2));
   }
 });
+// ----- Slash command auto registration -----
+const { ApplicationCommandOptionType } = require("discord.js");
+
+const commands = [
+  {
+    name: "play",
+    description: "Phát nhạc từ YouTube hoặc YouTube Music",
+    options: [
+      {
+        name: "query",
+        description: "Tên bài hát hoặc link YouTube",
+        type: ApplicationCommandOptionType.String,
+        required: true
+      }
+    ]
+  },
+  {
+    name: "skip",
+    description: "Bỏ qua bài hát hiện tại"
+  },
+  {
+    name: "stop",
+    description: "Dừng phát nhạc và rời kênh thoại"
+  },
+  {
+    name: "queue",
+    description: "Xem danh sách phát hiện tại"
+  }
+];
+
+try {
+  await client.application.commands.set(commands);
+  console.log("✅ Slash commands đã được đăng ký thành công!");
+} catch (err) {
+  console.error("❌ Lỗi khi đăng ký slash commands:", err);
+}
 
 // -------- LOGIN -------- //
 const token = process.env.TOKEN || process.env.DISCORD_TOKEN;
