@@ -1,1 +1,8 @@
-{}
+{  
+    "activities": [
+    {
+      "type": "LISTENING",
+      "name": "Music"
+    }
+  ]
+}

@@ -552,6 +552,81 @@ client.on("messageCreate", async (message) => {
     return message.reply("⛔ Đã dừng nhạc và rời voice.");
   }
 });
+// === CODE GỐC CỦA BẠN ===
+// ... toàn bộ code index.js bạn đã gửi từ đầu đến cuối ...
+// (không xóa, không sửa, giữ nguyên tất cả)
+
+/* =====================================================================
+   PHẦN CẢI TIẾN THÊM
+   - Auto reconnect voice khi disconnect
+   - Thông báo khi queue kết thúc
+   - Lệnh !skipto <số> cho prefix
+   - Lưu volume riêng cho từng guild
+   - Mini log slash command khi bot ready
+===================================================================== */
+
+const volumePath = path.join(__dirname, "config", "volume.json");
+if (!fs.existsSync(volumePath)) fs.writeFileSync(volumePath, "{}");
+let volumeConfig = JSON.parse(fs.readFileSync(volumePath, "utf8"));
+
+// Auto reconnect voice khi connection error
+client.player.on("connectionError", (queue, error) => {
+  console.warn(`⚠️ Lỗi kết nối voice ở guild ${queue.guild.id}:`, error);
+  setTimeout(async () => {
+    if (!queue.connection) {
+      try { await queue.connect(queue.voiceChannel); } catch(e){ console.error("Reconnect failed:", e); }
+    }
+  }, 5000);
+});
+
+// Thông báo khi queue kết thúc
+client.player.on("queueEnd", (queue) => {
+  if (queue.metadata?.channel) {
+    queue.metadata.channel.send("📭 Queue đã kết thúc. Cảm ơn bạn đã nghe nhạc!").catch(() => {});
+  }
+});
+
+// Tự động set volume khi queue được tạo
+client.player.on("queueCreate", (queue) => {
+  const vol = volumeConfig[queue.guild.id] || 100;
+  queue.setVolume(vol);
+});
+
+// Log tất cả slash command khi bot ready
+client.once(Events.ClientReady, () => {
+  client.application.commands.cache.forEach(cmd => {
+    console.log(`Slash command loaded: /${cmd.name}`);
+  });
+});
+
+// Prefix command: !skipto <số>
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+  const prefix = "!";
+  if (!message.content.startsWith(prefix)) return;
+
+  const args = message.content.slice(prefix.length).trim().split(/ +/);
+  const cmd = args.shift().toLowerCase();
+
+  if (cmd === "skipto") {
+    const queue = client.player.getQueue(message.guild.id);
+    if (!queue || !queue.playing) return message.reply("❌ Không có bài nào đang phát!");
+    const num = parseInt(args[0]);
+    if (isNaN(num) || num < 1 || num > queue.tracks.length) return message.reply("⚠️ Nhập số hợp lệ trong queue!");
+    queue.skipTo(num - 1);
+    return message.reply(`⏭️ Bỏ qua đến bài số **${num}**: ${queue.current.title}`);
+  }
+});
+
+// Lưu volume khi dùng /volume
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === "volume") {
+    const value = interaction.options.getInteger("value");
+    volumeConfig[interaction.guild.id] = value;
+    fs.writeFileSync(volumePath, JSON.stringify(volumeConfig, null, 2));
+  }
+});
 
 // -------- LOGIN -------- //
 const token = process.env.TOKEN || process.env.DISCORD_TOKEN;
