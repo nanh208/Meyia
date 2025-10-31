@@ -1,7 +1,8 @@
-// index.js — Meyia all-in-one (v1.3.1 HYBRID)
+// index.js — Meyia v1.4.0 (Final Hybrid Premium Edition)
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const {
   Client,
   Events,
@@ -13,7 +14,7 @@ const {
 const { GiveawaysManager } = require("discord-giveaways");
 const ms = require("ms");
 
-// ----------- LOAD CONFIG -----------
+// ----------- CONFIG & LOGS -----------
 const activityPath = path.join(__dirname, "config", "activity.json");
 if (!fs.existsSync(path.dirname(activityPath))) fs.mkdirSync(path.dirname(activityPath), { recursive: true });
 if (!fs.existsSync(activityPath)) fs.writeFileSync(activityPath, "{}");
@@ -39,9 +40,9 @@ const client = new Client({
   ]
 });
 
-// ----------- SETTINGS -----------
 const OWNER_ID = process.env.OWNER_ID || "1409222785154416651";
 let mutedChannels = new Set();
+const cooldowns = new Map();
 
 function hasAdminPermission(i) {
   if (!i) return false;
@@ -56,8 +57,11 @@ function hasAdminPermission(i) {
   return false;
 }
 
-function getStatusString() {
-  return `📡 **Trạng thái bot:**\n🧠 Chat AI: 🔒 Tắt\n🔇 Kênh mute: ${mutedChannels.size ? Array.from(mutedChannels).map(id => `<#${id}>`).join(", ") : "Không"}`;
+function formatUptime(seconds) {
+  const d = Math.floor(seconds / (3600 * 24));
+  const h = Math.floor((seconds % (3600 * 24)) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${d ? `${d}d ` : ""}${h ? `${h}h ` : ""}${m}m`;
 }
 
 // ----------- GIVEAWAY MANAGER -----------
@@ -73,7 +77,7 @@ const manager = new GiveawaysManager(client, {
 });
 client.giveawaysManager = manager;
 
-// ----------- READY -----------
+// ----------- READY EVENT -----------
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Bot MEYIA đã sẵn sàng (${client.user.tag})`);
 
@@ -89,54 +93,38 @@ client.once(Events.ClientReady, async () => {
         { name: "prize", description: "Phần thưởng", type: ApplicationCommandOptionType.String, required: true }
       ]
     },
-    {
-      name: "activity",
-      description: "Quản lý log hoạt động (chỉ admin)",
-      options: [
-        { name: "setup", description: "Chọn kênh log", type: 1, options: [{ name: "channel", description: "Kênh log", type: ApplicationCommandOptionType.Channel, required: true }] },
-        { name: "enable", description: "Bật log hoạt động", type: 1 },
-        { name: "disable", description: "Tắt log hoạt động", type: 1 }
-      ]
-    },
     { name: "avatar", description: "Xem avatar", options: [{ name: "user", description: "Người cần xem", type: ApplicationCommandOptionType.User, required: false }] },
     { name: "info", description: "Thông tin bot" },
-    { name: "xoachat", description: "Xóa tin nhắn (admin)", options: [{ name: "count", description: "Số tin nhắn (1-99)", type: ApplicationCommandOptionType.Integer, required: true }] },
     { name: "ping", description: "Kiểm tra độ trễ" },
-    { name: "8ball", description: "Quả cầu tiên tri" },
-    { name: "rps", description: "Oẳn tù tì" },
-    { name: "love", description: "Độ hợp đôi" },
-    { name: "hug", description: "Ôm ai đó", options: [{ name: "user", description: "Người nhận", type: ApplicationCommandOptionType.User, required: false }] },
-    { name: "slap", description: "Đánh yêu", options: [{ name: "user", description: "Người nhận", type: ApplicationCommandOptionType.User, required: false }] },
-    { name: "say", description: "Cho bot nói lại", options: [{ name: "text", description: "Nội dung", type: ApplicationCommandOptionType.String, required: true }] },
     { name: "quote", description: "Trích dẫn ngẫu nhiên" },
-    { name: "mood", description: "Tâm trạng Meyia" },
-    { name: "birthday", description: "Sinh nhật (nội bộ)" }
+    { name: "mood", description: "Tâm trạng của Meyia 💖" },
+    { name: "say", description: "Bot nói lại", options: [{ name: "text", description: "Nội dung", type: ApplicationCommandOptionType.String, required: true }] }
   ]);
+
   console.log("✅ Slash commands đã đăng ký.");
 });
 
-// ----------- INTERACTIONS (Slash Commands) -----------
+// ----------- INTERACTIONS -----------
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   const cmd = interaction.commandName;
-  const isAdmin = hasAdminPermission(interaction);
+  const userId = interaction.user.id;
+  if (!cooldowns.has(userId)) cooldowns.set(userId, 0);
+  const now = Date.now();
+  if (now - cooldowns.get(userId) < 3000) return interaction.reply({ content: "⏳ Hãy chờ vài giây trước khi dùng lại lệnh!", ephemeral: true });
+  cooldowns.set(userId, now);
 
-  // 🎁 GIVEAWAY (giữ nguyên bản đặc biệt)
+  // ===== 🎁 GIVEAWAY (GIỮ NGUYÊN FORM) =====
   if (cmd === "giveaway") {
     const prize = interaction.options.getString("prize");
     const duration = ms(interaction.options.getString("time"));
     const winnerCount = interaction.options.getInteger("winners");
     const host = interaction.user;
     const channel = interaction.channel;
-
-    if (!prize || !duration || !winnerCount)
-      return interaction.reply({ content: "⚠️ Vui lòng nhập đủ thông tin giveaway!", ephemeral: true });
-    if (!duration)
-      return interaction.reply({ content: "⚠️ Thời gian không hợp lệ! (vd: 1m, 1h, 1d)", ephemeral: true });
+    if (!duration) return interaction.reply({ content: "⚠️ Thời gian không hợp lệ! (vd: 1m, 1h, 1d)", ephemeral: true });
 
     const endTime = Date.now() + duration;
     const giveawayId = Math.floor(Math.random() * 999999999);
-
     const embed = new EmbedBuilder()
       .setColor("#ca50dcff")
       .setTitle(`<a:1255341894687260775:1433317867293642858> G I V E A W A Y <a:1255341894687260775:1433317867293642858>`)
@@ -153,152 +141,108 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     const msg = await channel.send({ embeds: [embed] });
     await msg.react("<a:1261960933270618192:1433286685189341204>");
-
     const participants = new Set();
 
     const collector = msg.createReactionCollector({
-      filter: (reaction, user) =>
-        reaction.emoji.identifier === "1261960933270618192:1433286685189341204" && !user.bot,
+      filter: (r, u) => r.emoji.identifier === "1261960933270618192:1433286685189341204" && !u.bot,
       time: duration
     });
 
     collector.on("collect", (_, user) => participants.add(user.id));
-
     collector.on("end", async () => {
       let winners = [];
-      let winnerText;
-
-      if (participants.size === 0) {
-        winnerText = "❌ Không có ai tham gia giveaway này!";
-      } else {
+      if (participants.size > 0) {
         const all = Array.from(participants);
         for (let i = 0; i < winnerCount && all.length > 0; i++) {
-          const index = Math.floor(Math.random() * all.length);
-          winners.push(all.splice(index, 1)[0]);
+          winners.push(all.splice(Math.floor(Math.random() * all.length), 1)[0]);
         }
-        winnerText = `🏆 **Người chiến thắng:** ${winners.map(id => `<@${id}>`).join(", ")}`;
       }
-
+      const winnerText = winners.length ? `🏆 **Người chiến thắng:** ${winners.map(id => `<@${id}>`).join(", ")}` : "❌ Không có ai tham gia giveaway này!";
       const endEmbed = new EmbedBuilder()
         .setColor("#ea4ce7ff")
-        .setTitle(`<a:1255341894687260775:1433317867293642858> G I V E A W A Y ĐÃ KẾT THÚC <a:1255340646248616061:1433317989406605383>`)
-        .setDescription(
-          `🎁 **Phần thưởng:** ${prize}\n\n` +
-          `${winnerText}\n` +
-          `👑 **Người tổ chức:** ${host}\n\n` +
-          `📛 **Mã giveaway:** ${giveawayId}`
-        )
+        .setTitle(`<a:1255341894687260775:1433317867293642858> GIVEAWAY ĐÃ KẾT THÚC <a:1255340646248616061:1433317989406605383>`)
+        .setDescription(`🎁 **Phần thưởng:** ${prize}\n\n${winnerText}\n\n👑 **Người tổ chức:** ${host}\n📛 **Mã giveaway:** ${giveawayId}`)
         .setThumbnail(host.displayAvatarURL({ dynamic: true }))
         .setImage(interaction.client.user.displayAvatarURL({ dynamic: true, size: 512 }));
-
       await msg.edit({ embeds: [endEmbed] });
-
-      if (winners.length > 0)
-        await channel.send(`🎊 Chúc mừng ${winners.map(id => `<@${id}>`).join(", ")} đã thắng **${prize}**!`);
+      if (winners.length > 0) await channel.send(`🎊 Chúc mừng ${winners.map(id => `<@${id}>`).join(", ")} đã thắng **${prize}**!`);
     });
 
     return interaction.reply({ content: "✅ Giveaway đã được tạo thành công!", ephemeral: true });
   }
 
-  // 🎀 HELP chi tiết
-  if (cmd === "help") {
-    const helpEmbed = new EmbedBuilder()
-      .setColor(0xFFC0CB)
-      .setTitle("💖 Danh sách lệnh của Meyia Bot")
-      .setDescription("✨ Meyia là bot hỗ trợ quản lý & giải trí, giúp server của bạn sinh động hơn 💕\n\n📚 **Dùng được cả `/` và `!`:**")
-      .addFields(
-        {
-          name: "🛠️ Quản trị",
-          value:
-            "• `/activity setup <channel>` — Thiết lập kênh log.\n" +
-            "• `/activity enable` — Bật ghi log.\n" +
-            "• `/activity disable` — Tắt ghi log.\n" +
-            "• `/xoachat <count>` — Xóa nhanh tin nhắn.\n" +
-            "• `/status` — Xem trạng thái bot."
-        },
-        {
-          name: "🎉 Giải trí",
-          value:
-            "• `/giveaway <time> <winners> <prize>` — Tạo giveaway 🎁.\n" +
-            "• `/8ball` — Quả cầu tiên tri 🎱.\n" +
-            "• `/rps` — Oẳn tù tì ✊🖐️✌️.\n" +
-            "• `/love` — Độ hợp đôi 💞.\n" +
-            "• `/hug`, `/slap` — Ôm hoặc đánh yêu ai đó 😝."
-        },
-        {
-          name: "💬 Tiện ích",
-          value:
-            "• `/say <text>` — Bot nói lại.\n" +
-            "• `/quote` — Câu nói ngẫu nhiên.\n" +
-            "• `/mood` — Tâm trạng bot 🩷.\n" +
-            "• `/avatar [user]` — Xem avatar.\n" +
-            "• `/info` — Thông tin bot.\n" +
-            "• `/ping` — Kiểm tra độ trễ."
-        }
-      )
-      .setFooter({ text: "💫 Meyia v1.3.1 — Đáng yêu, thông minh và hữu ích 💕" });
-
-    return interaction.reply({ embeds: [helpEmbed], ephemeral: true });
+  // ===== ⚙️ TIỆN ÍCH =====
+  if (cmd === "ping") {
+    const ping = client.ws.ping;
+    const uptime = formatUptime(process.uptime());
+    const embed = new EmbedBuilder()
+      .setColor("#DB7093")
+      .setTitle("🏓 Pong! Kết quả kiểm tra:")
+      .setDescription(`🌸 **API:** ${ping}ms\n💖 **Uptime:** ${uptime}`)
+      .setFooter({ text: "Meyia luôn hoạt động hết mình 💕" });
+    return interaction.reply({ embeds: [embed] });
   }
 
-  // -------- INFO + CÁC LỆNH KHÁC GIỮ NGUYÊN --------
   if (cmd === "info") {
-    const infoEmbed = new EmbedBuilder()
-      .setColor(0xFFB6C1)
-      .setTitle("🌸 Meyia v1.3.1 — All-in-one bot")
-      .setDescription("Một cô trợ lý nhỏ xinh giúp bạn quản lý server và tạo không khí vui vẻ 💕")
+    const mem = (os.totalmem() - os.freemem()) / 1024 / 1024;
+    const embed = new EmbedBuilder()
+      .setColor("#DB7093")
+      .setTitle("🌸 Meyia v1.4.0 — All-in-one Bot")
+      .setDescription("Một cô trợ lý nhỏ xinh giúp bạn quản lý & tạo niềm vui 💕")
       .addFields(
         { name: "👑 Người phát triển", value: `<@${OWNER_ID}>`, inline: true },
-        { name: "⚙️ Phiên bản", value: "v1.3.1", inline: true },
-        { name: "🩷 Framework", value: "discord.js v14" }
+        { name: "⚙️ Phiên bản", value: "v1.4.0", inline: true },
+        { name: "💾 RAM sử dụng", value: `${mem.toFixed(2)} MB`, inline: true },
+        { name: "🩷 Framework", value: "discord.js v14", inline: true },
+        { name: "🌐 Server đang phục vụ", value: `${client.guilds.cache.size}`, inline: true }
       )
       .setThumbnail(client.user.displayAvatarURL())
       .setFooter({ text: "💫 Meyia Bot © 2025" });
-    return interaction.reply({ embeds: [infoEmbed] });
+    return interaction.reply({ embeds: [embed] });
   }
 
-  // Các lệnh cũ (ping, xoachat, love, rps...) giữ nguyên logic
-});
-
-// ----------- PREFIX COMMANDS -----------
-client.on(Events.MessageCreate, async (msg) => {
-  if (!msg.guild || msg.author.bot) return;
-  const prefix = "!";
-  if (!msg.content.startsWith(prefix)) return;
-
-  const args = msg.content.slice(prefix.length).trim().split(/ +/);
-  const cmd = args.shift().toLowerCase();
-
-  if (cmd === "help") {
-    const helpEmbed = new EmbedBuilder()
-      .setColor(0xFFC0CB)
-      .setTitle("💖 Danh sách lệnh của Meyia Bot")
-      .setDescription("✨ Dùng được cả `/` và `!`\nChi tiết lệnh ở dưới đây:")
-      .addFields(
-        { name: "🛠️ Quản trị", value: "`!activity`, `!xoachat`, `!status`" },
-        { name: "🎉 Giải trí", value: "`!giveaway`, `!8ball`, `!rps`, `!love`, `!hug`, `!slap`" },
-        { name: "💬 Tiện ích", value: "`!say`, `!quote`, `!mood`, `!avatar`, `!info`, `!ping`" }
-      )
-      .setFooter({ text: "💫 Meyia Bot v1.3.1 💕" });
-    return msg.reply({ embeds: [helpEmbed] });
+  if (cmd === "quote") {
+    const quotes = [
+      "🌸 Mỗi ngày là một cơ hội mới để tỏa sáng.",
+      "💫 Đừng sợ thất bại, vì nó dạy bạn cách thành công.",
+      "🌷 Nụ cười là vũ khí mạnh nhất của bạn.",
+      "💖 Hãy yêu bản thân mình trước khi yêu ai khác.",
+      "🌈 Sống là để yêu thương và được yêu thương."
+    ];
+    const quote = quotes[Math.floor(Math.random() * quotes.length)];
+    const embed = new EmbedBuilder()
+      .setColor("#DB7093")
+      .setTitle("✨ Trích dẫn ngẫu nhiên")
+      .setDescription(quote)
+      .setFooter({ text: "Meyia nói lời dễ thương 💕" });
+    return interaction.reply({ embeds: [embed] });
   }
 
-  if (cmd === "ping") return msg.reply(`🏓 Pong! ${Math.round(client.ws.ping)}ms`);
-  if (cmd === "love") return msg.reply(`💞 Hợp đôi: ${Math.floor(Math.random() * 101)}%`);
-  if (cmd === "rps") return msg.reply(["✊", "🖐️", "✌️"][Math.floor(Math.random() * 3)]);
-  if (cmd === "8ball") return msg.reply(["Có", "Không", "Có thể", "Hỏi lại sau"][Math.floor(Math.random() * 4)]);
-  if (cmd === "quote") return msg.reply(["Cuộc sống là hành trình.", "Cười lên nào!", "Bạn làm được!"][Math.floor(Math.random() * 3)]);
-  if (cmd === "mood") return msg.reply(["😊 Vui", "😴 Mệt", "🥰 Hạnh phúc", "🤔 Nghĩ ngợi"][Math.floor(Math.random() * 4)]);
-  if (cmd === "say") return msg.reply(args.join(" ") || "Bạn chưa nhập nội dung!");
-  if (cmd === "info") return msg.reply("💫 Meyia v1.3.1 — Đáng yêu & hữu ích 💕");
-});
+  if (cmd === "mood") {
+    const moods = ["😊 Vui vẻ", "🥰 Hạnh phúc", "😴 Mệt mỏi", "🤔 Suy tư", "😎 Tự tin"];
+    const mood = moods[Math.floor(Math.random() * moods.length)];
+    const embed = new EmbedBuilder()
+      .setColor("#DB7093")
+      .setTitle("💖 Tâm trạng hiện tại của Meyia")
+      .setDescription(`Hôm nay mình cảm thấy **${mood}** đó~ ✨`);
+    return interaction.reply({ embeds: [embed] });
+  }
 
-// ----------- LOG ACTIVITY EVENTS -----------
-client.on(Events.GuildMemberAdd, m => logActivity(m.guild.id, `🟢 ${m.user.tag} vừa tham gia!`));
-client.on(Events.GuildMemberRemove, m => logActivity(m.guild.id, `🔴 ${m.user.tag} đã rời server.`));
-client.on(Events.MessageCreate, msg => {
-  if (!msg.guild || msg.author.bot) return;
-  logActivity(msg.guild.id, `💬 ${msg.author.tag}: ${msg.content}`);
+  if (cmd === "say") {
+    const text = interaction.options.getString("text");
+    await interaction.channel.send({ content: text });
+    return interaction.reply({ content: "💬 Đã gửi tin nhắn!", ephemeral: true });
+  }
+
+  if (cmd === "avatar") {
+    const user = interaction.options.getUser("user") || interaction.user;
+    const embed = new EmbedBuilder()
+      .setColor("#DB7093")
+      .setTitle(`🖼️ Avatar của ${user.tag}`)
+      .setImage(user.displayAvatarURL({ dynamic: true, size: 1024 }))
+      .setFooter({ text: "💖 Ấn vào avatar để tải ảnh full size" });
+    return interaction.reply({ embeds: [embed] });
+  }
 });
 
 // ----------- LOGIN -----------
