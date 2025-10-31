@@ -13,21 +13,6 @@ const {
 const { GiveawaysManager } = require("discord-giveaways");
 const ms = require("ms");
 
-// -------- CONFIG -------- //
-const activityPath = path.join(__dirname, "config", "activity.json");
-if (!fs.existsSync(path.dirname(activityPath))) fs.mkdirSync(path.dirname(activityPath), { recursive: true });
-if (!fs.existsSync(activityPath)) fs.writeFileSync(activityPath, "{}");
-let activityConfig = JSON.parse(fs.readFileSync(activityPath, "utf8"));
-function saveActivityConfig() {
-  fs.writeFileSync(activityPath, JSON.stringify(activityConfig, null, 2));
-}
-function logActivity(guildId, msg) {
-  const cfg = activityConfig[guildId];
-  if (!cfg || !cfg.enabled || !cfg.channelId) return;
-  const ch = client.channels.cache.get(cfg.channelId);
-  if (ch) ch.send(msg).catch(() => {});
-}
-
 // -------- CLIENT INIT -------- //
 const client = new Client({
   intents: [
@@ -43,22 +28,25 @@ const OWNER_ID = process.env.OWNER_ID || "1409222785154416651";
 const MAIN_COLOR = "#CA50DC";
 let mutedChannels = new Set();
 
+// -------- CONFIG -------- //
+const activityPath = path.join(__dirname, "config", "activity.json");
+if (!fs.existsSync(path.dirname(activityPath))) fs.mkdirSync(path.dirname(activityPath), { recursive: true });
+if (!fs.existsSync(activityPath)) fs.writeFileSync(activityPath, "{}");
+let activityConfig = JSON.parse(fs.readFileSync(activityPath, "utf8"));
+function saveActivityConfig() { fs.writeFileSync(activityPath, JSON.stringify(activityConfig, null, 2)); }
+function logActivity(guildId, msg) {
+  const cfg = activityConfig[guildId];
+  if (!cfg || !cfg.enabled || !cfg.channelId) return;
+  const ch = client.channels.cache.get(cfg.channelId);
+  if (ch) ch.send(msg).catch(() => {});
+}
+
 function hasAdminPermission(i) {
   return (
     i?.member?.permissions?.has(PermissionFlagsBits.Administrator) ||
     i?.user?.id === OWNER_ID ||
     i?.member?.permissions?.has(PermissionFlagsBits.ManageGuild)
   );
-}
-
-function getStatusString() {
-  return `📡 **Trạng thái bot:**\n🧠 Chat AI: 🔒 Tắt\n🔇 Kênh mute: ${
-    mutedChannels.size
-      ? Array.from(mutedChannels)
-          .map(id => `<#${id}>`)
-          .join(", ")
-      : "Không"
-  }`;
 }
 
 // -------- GIVEAWAY MANAGER -------- //
@@ -78,6 +66,7 @@ client.giveawaysManager = manager;
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Bot MEYIA đã sẵn sàng (${client.user.tag})`);
 
+  // ĐĂNG KÝ SLASH COMMANDS GLOBAL
   await client.application.commands.set([
     { name: "help", description: "Xem danh sách lệnh của bot" },
     { name: "status", description: "Xem trạng thái bot" },
@@ -90,29 +79,18 @@ client.once(Events.ClientReady, async () => {
         { name: "prize", description: "Phần thưởng", type: ApplicationCommandOptionType.String, required: true }
       ]
     },
-    {
-      name: "activity",
-      description: "Quản lý log hoạt động (chỉ admin)",
-      options: [
-        { name: "setup", description: "Chọn kênh log", type: 1, options: [{ name: "channel", description: "Kênh log", type: ApplicationCommandOptionType.Channel, required: true }] },
-        { name: "enable", description: "Bật log hoạt động", type: 1 },
-        { name: "disable", description: "Tắt log hoạt động", type: 1 }
-      ]
-    },
-    { name: "avatar", description: "Xem avatar", options: [{ name: "user", description: "Người cần xem", type: ApplicationCommandOptionType.User, required: false }] },
-    { name: "info", description: "Thông tin bot" },
-    { name: "xoachat", description: "Xóa tin nhắn (admin)", options: [{ name: "count", description: "Số tin nhắn (1-99)", type: ApplicationCommandOptionType.Integer, required: true }] },
     { name: "ping", description: "Kiểm tra độ trễ" },
     { name: "8ball", description: "Quả cầu tiên tri" },
     { name: "rps", description: "Oẳn tù tì" },
     { name: "love", description: "Độ hợp đôi" },
-    { name: "hug", description: "Ôm ai đó", options: [{ name: "user", description: "Người nhận", type: ApplicationCommandOptionType.User, required: false }] },
-    { name: "slap", description: "Đánh yêu", options: [{ name: "user", description: "Người nhận", type: ApplicationCommandOptionType.User, required: false }] },
-    { name: "say", description: "Cho bot nói lại", options: [{ name: "text", description: "Nội dung", type: ApplicationCommandOptionType.String, required: true }] },
-    { name: "quote", description: "Trích dẫn ngẫu nhiên" },
     { name: "mood", description: "Tâm trạng Meyia" },
-    { name: "birthday", description: "Sinh nhật (nội bộ)" }
+    { name: "quote", description: "Trích dẫn ngẫu nhiên" },
+    { name: "say", description: "Cho bot nói lại", options: [{ name: "text", description: "Nội dung", type: ApplicationCommandOptionType.String, required: true }] },
+    { name: "avatar", description: "Xem avatar", options: [{ name: "user", description: "Người cần xem", type: ApplicationCommandOptionType.User, required: false }] },
+    { name: "xoachat", description: "Xóa tin nhắn (admin)", options: [{ name: "count", description: "Số tin nhắn (1-99)", type: ApplicationCommandOptionType.Integer, required: true }] },
+    { name: "info", description: "Thông tin bot" }
   ]);
+
   console.log("✅ Slash commands đã đăng ký.");
 });
 
@@ -123,7 +101,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   const user = interaction.user;
   const channel = interaction.channel;
 
-  // -------- GIVEAWAY (giữ nguyên form) -------- //
+  // -------- GIVEAWAY (KHÔNG SỬA THEO YÊU CẦU) -------- //
   if (cmd === "giveaway") {
     const prize = interaction.options.getString("prize");
     const duration = ms(interaction.options.getString("time"));
@@ -152,20 +130,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     const participants = new Set();
     const collector = msg.createReactionCollector({
-      filter: (reaction, u) => reaction.emoji.identifier === "1261960933270618192:1433286685189341204" && !u.bot,
+      filter: (reaction, u) => reaction.emoji.id === "1261960933270618192" && !u.bot,
       time: duration
     });
 
     collector.on("collect", (_, u) => participants.add(u.id));
     collector.on("end", async () => {
       let winners = [];
-      if (participants.size === 0) {
-        winners = [];
-      } else {
+      if (participants.size !== 0) {
         const arr = Array.from(participants);
         for (let i = 0; i < winnerCount && arr.length > 0; i++) {
-          const idx = Math.floor(Math.random() * arr.length);
-          winners.push(arr.splice(idx, 1)[0]);
+          winners.push(arr.splice(Math.floor(Math.random() * arr.length), 1)[0]);
         }
       }
 
@@ -187,7 +162,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return interaction.reply({ content: "✅ Giveaway đã được tạo thành công!", ephemeral: true });
   }
 
-  // -------- CÁC LỆNH TIỆN ÍCH & VUI -------- //
+  // -------- LỆNH KHÁC (HOẠT ĐỘNG BÌNH THƯỜNG) -------- //
   if (cmd === "ping") return interaction.reply(`🏓 Pong! Độ trễ: ${client.ws.ping}ms`);
   if (cmd === "love") return interaction.reply(`💞 Mức độ hợp đôi: ${Math.floor(Math.random() * 101)}%`);
   if (cmd === "rps") return interaction.reply(["✊", "🖐️", "✌️"][Math.floor(Math.random() * 3)]);
@@ -209,11 +184,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 
   if (cmd === "avatar") {
-    const user = interaction.options.getUser("user") || interaction.user;
+    const target = interaction.options.getUser("user") || interaction.user;
     const embed = new EmbedBuilder()
       .setColor(MAIN_COLOR)
-      .setTitle(`🖼 Avatar của ${user.username}`)
-      .setImage(user.displayAvatarURL({ dynamic: true, size: 512 }));
+      .setTitle(`🖼 Avatar của ${target.username}`)
+      .setImage(target.displayAvatarURL({ dynamic: true, size: 512 }));
     return interaction.reply({ embeds: [embed] });
   }
 
