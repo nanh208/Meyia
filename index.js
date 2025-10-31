@@ -737,4 +737,4 @@ if (!token) {
 client.login(token).catch(err => {
     console.error("Login error:", err);
     process.exit(1);
-});
+}); 
