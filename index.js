@@ -1,740 +1,497 @@
-// index.js — Meyia all-in-one (stable) — Music (YouTube Music) enabled
+// index.js — Meiya (Slash + SQLite) — NO MUSIC
 require("dotenv").config();
-
-const fs = require("fs");
+const { Client, GatewayIntentBits, Partials, Events, EmbedBuilder, PermissionsBitField, ApplicationCommandOptionType } = require("discord.js");
 const path = require("path");
+const fs = require("fs");
 const ms = require("ms");
-const { Client, GatewayIntentBits, Events, EmbedBuilder, ApplicationCommandOptionType } = require("discord.js");
+const Database = require("better-sqlite3");
+const fetch = require("node-fetch"); // optional for weather/translate if you add API keys
 
-// ---------- Music related ----------
-const { Player, QueryType } = require("discord-player");
-const playdl = require("play-dl"); // used by discord-player as extractor back-end
-// ------------------------------------
-
-const { GiveawaysManager } = require("discord-giveaways");
-
-// Basic helpers / config placeholders (keep your originals if present)
 const MAIN_COLOR = "#FFB6C1";
 const OWNER_ID = process.env.OWNER_ID || "0";
 
-// ---------- CLIENT INIT ----------
+// ensure database dir
+const dbDir = path.join(__dirname, "database");
+if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+const dbPath = path.join(dbDir, "data.db");
+const db = new Database(dbPath);
+
+// create tables
+db.prepare(`CREATE TABLE IF NOT EXISTS warnings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guildId TEXT,
+  userId TEXT,
+  moderatorId TEXT,
+  reason TEXT,
+  timestamp INTEGER
+)`).run();
+
+db.prepare(`CREATE TABLE IF NOT EXISTS reminders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guildId TEXT,
+  userId TEXT,
+  remindAt INTEGER,
+  message TEXT,
+  createdAt INTEGER
+)`).run();
+
+db.prepare(`CREATE TABLE IF NOT EXISTS guild_config (
+  guildId TEXT PRIMARY KEY,
+  logChannelId TEXT,
+  autoRoleId TEXT
+)`).run();
+
+// helpers for db
+const insertWarning = db.prepare(`INSERT INTO warnings (guildId, userId, moderatorId, reason, timestamp) VALUES (?, ?, ?, ?, ?)`);
+const getWarnings = db.prepare(`SELECT * FROM warnings WHERE guildId = ? AND userId = ? ORDER BY id DESC`);
+const deleteWarnings = db.prepare(`DELETE FROM warnings WHERE guildId = ? AND userId = ?`);
+const getAllWarnings = db.prepare(`SELECT * FROM warnings WHERE guildId = ? ORDER BY id DESC`);
+
+const insertReminder = db.prepare(`INSERT INTO reminders (guildId, userId, remindAt, message, createdAt) VALUES (?, ?, ?, ?, ?)`);
+const getPendingReminders = db.prepare(`SELECT * FROM reminders WHERE remindAt > ? ORDER BY remindAt ASC`);
+const deleteReminder = db.prepare(`DELETE FROM reminders WHERE id = ?`);
+
+const setGuildConfig = db.prepare(`INSERT INTO guild_config (guildId, logChannelId, autoRoleId) VALUES (?, ?, ?) 
+  ON CONFLICT(guildId) DO UPDATE SET logChannelId=excluded.logChannelId, autoRoleId=excluded.autoRoleId`);
+const getGuildConfig = db.prepare(`SELECT * FROM guild_config WHERE guildId = ?`);
+
+// client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessageReactions,
-    GatewayIntentBits.GuildVoiceStates // cần cho voice
-  ]
+    GatewayIntentBits.GuildMessageReactions
+  ],
+  partials: [Partials.Channel]
 });
 
-// simple admin check (adjust to your original logic if different)
-function hasAdminPermission(i) {
+// utility
+function isAdmin(member) {
   try {
-    return i.memberPermissions?.has?.("Administrator") || i.member?.permissions?.has?.("Administrator") || (i.user && i.user.id === OWNER_ID);
-  } catch {
-    return false;
-  }
+    return member.permissions.has(PermissionsBitField.Flags.Administrator) || member.id === OWNER_ID;
+  } catch { return false; }
 }
 
-// -------- GIVEAWAY MANAGER (KEEP ORIGINAL BEHAVIOR) -------- //
-const manager = new GiveawaysManager(client, {
-  storage: "./giveaways.json",
-  default: {
-    botsCanWin: false,
-    exemptPermissions: [],
-    embedColor: MAIN_COLOR,
-    reaction: "🎉"
+function ensureMuteRole(guild) {
+  // create or return 'Meiya Muted' role
+  const roleName = "Meiya Muted";
+  let role = guild.roles.cache.find(r => r.name === roleName);
+  if (!role) {
+    // create role
+    role = guild.roles.create({ name: roleName, permissions: [] }).catch(() => null);
   }
-});
-client.giveawaysManager = manager;
-
-// -------- SETUP play-dl (YouTube Music cookie) -------- //
-if (process.env.YOUTUBE_COOKIE) {
-  try {
-    // play-dl accepts token/cookie; set if provided
-    if (typeof playdl.setToken === "function") playdl.setToken({ ytmusic: process.env.YOUTUBE_COOKIE });
-  } catch (err) {
-    console.warn("⚠️ play-dl cookie setup warning:", err?.message || err);
-  }
+  return role;
 }
 
-// -------- PLAYER INIT (single instance) -------- //
-client.player = new Player(client, {
-  ytdlOptions: {
-    quality: "highestaudio",
-    highWaterMark: 1 << 25
-  }
-});
+// register commands list
+const commands = [
+  // Moderation
+  { name: "ban", description: "Ban member", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "reason", type: ApplicationCommandOptionType.String, required: false }] },
+  { name: "kick", description: "Kick member", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "reason", type: ApplicationCommandOptionType.String, required: false }] },
+  { name: "unban", description: "Unban by user ID", options: [{ name: "userid", type: ApplicationCommandOptionType.String, required: true }] },
+  { name: "timeout", description: "Timeout (in minutes)", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "minutes", type: ApplicationCommandOptionType.Integer, required: true }, { name: "reason", type: ApplicationCommandOptionType.String, required: false }] },
+  { name: "clear", description: "Bulk delete messages", options: [{ name: "amount", type: ApplicationCommandOptionType.Integer, required: true }] },
+  { name: "lock", description: "Lock a channel" },
+  { name: "unlock", description: "Unlock a channel" },
+  { name: "mute", description: "Mute member (adds muted role)", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "minutes", type: ApplicationCommandOptionType.Integer, required: false }] },
+  { name: "unmute", description: "Unmute member", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }] },
+  // warn
+  { name: "warn", description: "Warn a user", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "reason", type: ApplicationCommandOptionType.String, required: true }] },
+  { name: "warnings", description: "List warnings for a user", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }] },
+  { name: "clearwarn", description: "Clear warnings for a user", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }] },
+  { name: "setlog", description: "Set mod log channel", options: [{ name: "channel", type: ApplicationCommandOptionType.Channel, required: true }] },
 
-// -------- PLAYER EVENTS (clean, no duplicates) -------- //
-client.player.on("error", (queue, error) => {
-  console.error(`Player Error in guild ${queue?.guild?.id || "?"}:`, error);
-});
+  // Utility/Info
+  { name: "serverinfo", description: "Show server info" },
+  { name: "userinfo", description: "Show user info", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: false }] },
+  { name: "avatar", description: "Show avatar", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: false }] },
+  { name: "ping", description: "Check bot latency" },
+  { name: "uptime", description: "Show bot uptime" },
+  { name: "botinfo", description: "Info about the bot" },
+  { name: "say", description: "Bot says your message", options: [{ name: "text", type: ApplicationCommandOptionType.String, required: true }] },
+  { name: "embed", description: "Send embed", options: [{ name: "title", type: ApplicationCommandOptionType.String, required: true }, { name: "description", type: ApplicationCommandOptionType.String, required: true }] },
+  { name: "poll", description: "Create poll", options: [{ name: "question", type: ApplicationCommandOptionType.String, required: true }, { name: "option1", type: ApplicationCommandOptionType.String, required: true }, { name: "option2", type: ApplicationCommandOptionType.String, required: true }, { name: "option3", type: ApplicationCommandOptionType.String, required: false }, { name: "option4", type: ApplicationCommandOptionType.String, required: false }] },
 
-client.player.on("playerStart", (queue, track) => {
-  try {
-    if (queue?.metadata?.channel) {
-      queue.metadata.channel.send({ content: `🎶 Đang phát: **${track.title}** — yêu cầu bởi ${track.requestedBy ? `<@${track.requestedBy.id}>` : "?"}` }).catch(() => {});
-    }
-  } catch {}
-});
+  // Reminders / advanced utils
+  { name: "remind", description: "Set a reminder (e.g. 10m, 2h, 1d)", options: [{ name: "time", type: ApplicationCommandOptionType.String, required: true }, { name: "text", type: ApplicationCommandOptionType.String, required: true }] },
+  { name: "roleinfo", description: "Role details", options: [{ name: "role", type: ApplicationCommandOptionType.Role, required: true }] },
 
-client.player.on("playerDisconnect", (queue) => {
-  try {
-    if (queue?.metadata?.channel) queue.metadata.channel.send("📛 Bot đã rời voice, queue đã bị huỷ.").catch(() => {});
-  } catch {}
-});
+  // fun
+  { name: "quote", description: "Random quote" }
+];
 
-client.player.on("queueEnd", (queue) => {
-  try {
-    if (queue?.metadata?.channel) queue.metadata.channel.send("📭 Queue đã kết thúc. Cảm ơn bạn đã nghe nhạc!").catch(() => {});
-  } catch {}
-});
-
-client.player.on("connectionError", (queue, error) => {
-  console.warn(`⚠️ Lỗi kết nối voice ở guild ${queue?.guild?.id || "?"}:`, error);
-  // attempt reconnect after short delay
-  setTimeout(async () => {
-    try {
-      if (!queue.connection && queue.voiceChannel) await queue.connect(queue.voiceChannel);
-    } catch (e) {
-      console.error("Reconnect failed:", e);
-    }
-  }, 5000);
-});
-
-// -------- READY: register commands (single block) -------- //
+// on ready
 client.once(Events.ClientReady, async () => {
-  console.log(`✅ Bot MEYIA đã sẵn sàng (${client.user.tag})`);
-
-  const commands = [
-    { name: "help", description: "Xem danh sách lệnh của bot" },
-    { name: "status", description: "Xem trạng thái bot" },
-    {
-      name: "giveaway",
-      description: "Tạo giveaway 🎉",
-      options: [
-        { name: "time", description: "Thời gian (ví dụ: 1m, 1h, 1d)", type: ApplicationCommandOptionType.String, required: true },
-        { name: "winners", description: "Số người thắng", type: ApplicationCommandOptionType.Integer, required: true },
-        { name: "prize", description: "Phần thưởng", type: ApplicationCommandOptionType.String, required: true }
-      ]
-    },
-    { name: "ping", description: "Kiểm tra độ trễ" },
-    { name: "8ball", description: "Quả cầu tiên tri" },
-    { name: "rps", description: "Oẳn tù tì" },
-    { name: "love", description: "Độ hợp đôi" },
-    { name: "mood", description: "Tâm trạng Meyia" },
-    { name: "quote", description: "Trích dẫn ngẫu nhiên" },
-    { name: "say", description: "Cho bot nói lại nội dung bạn nhập", options: [{ name: "text", description: "Nội dung bot sẽ nói", type: ApplicationCommandOptionType.String, required: true }] },
-    { name: "avatar", description: "Xem avatar của user (nếu không chọn thì lấy bạn)", options: [{ name: "user", description: "Người cần xem avatar", type: ApplicationCommandOptionType.User, required: false }] },
-    { name: "xoachat", description: "Xóa tin nhắn (1-99)", options: [{ name: "count", description: "Số lượng tin nhắn muốn xóa (1-99)", type: ApplicationCommandOptionType.Integer, required: true }] },
-    { name: "info", description: "Thông tin bot" },
-
-    // Music slash commands (legacy single 'query' kept)
-    { name: "play", description: "Phát nhạc (YouTube/YouTube Music) - link hoặc tên", options: [{ name: "query", description: "Tên bài / link / playlist", type: ApplicationCommandOptionType.String, required: true }] },
-    { name: "stop", description: "Dừng nhạc và rời voice" },
-    { name: "skip", description: "Bỏ qua bài đang phát" },
-    { name: "pause", description: "Tạm dừng phát" },
-    { name: "resume", description: "Tiếp tục phát" },
-    { name: "queue", description: "Xem queue hiện tại" },
-    { name: "volume", description: "Đặt âm lượng (1-200)", options: [{ name: "value", description: "Số (1-200)", type: ApplicationCommandOptionType.Integer, required: true }] },
-
-    // activity admin placeholder
-    {
-      name: "activity",
-      description: "Quản lý log hoạt động (chỉ admin)",
-      options: [
-        { name: "setup", description: "Chọn kênh log", type: ApplicationCommandOptionType.Subcommand, options: [{ name: "channel", description: "Kênh log (chọn)", type: ApplicationCommandOptionType.Channel, required: true }] },
-        { name: "enable", description: "Bật log hoạt động", type: ApplicationCommandOptionType.Subcommand },
-        { name: "disable", description: "Tắt log hoạt động", type: ApplicationCommandOptionType.Subcommand }
-      ]
-    }
-  ];
+  console.log(`✅ Meiya ready as ${client.user.tag}`);
 
   try {
     await client.application.commands.set(commands);
-    console.log("Slash commands registered.");
-  } catch (err) {
-    console.error("Failed to register slash commands:", err);
+    console.log("Slash commands deployed.");
+  } catch (e) {
+    console.error("Failed to deploy commands:", e);
   }
 
-  // mini log of loaded slash commands
-  try {
-    client.application.commands.cache.forEach(c => console.log(`Slash command loaded: /${c.name}`));
-  } catch {}
-});
-
-// -------- INTERACTIONS HANDLER (includes music & giveaway) -------- //
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  const cmd = interaction.commandName;
-
-  // ---------- GIVEAWAY ----------
-  if (cmd === "giveaway") {
-    try {
-      const prize = interaction.options.getString("prize");
-      const duration = interaction.options.getInteger("duration"); // số nguyên (giây)
-      const winnerCount = interaction.options.getInteger("winners");
-      const host = interaction.user;
-      const channel = interaction.channel;
-
-      if (!prize || !duration || !winnerCount) {
-        return interaction.reply({ content: "⚠️ Vui lòng nhập đủ thông tin giveaway!", ephemeral: true });
-      }
-
-      const endTime = Date.now() + duration * 1000;
-      const giveawayId = Math.floor(Math.random() * 999999999);
-
-      const embed = new EmbedBuilder()
-        .setColor(0x00FF00)
-        .setTitle(`<a:1255341894687260775:1433317867293642858> G I V E A W A Y <a:1255341894687260775:1433317867293642858>`)
-        .setDescription(
-          `🎁 **PHẦN THƯỞNG:** ${prize}\n\n` +
-          `<a:1255340646248616061:1433317989406605383> Mọi người hãy bấm vào emoji dưới để tham gia nhé!\n\n` +
-          `👑 **Người tổ chức:** ${host}\n` +
-          `🏆 **Số lượng giải:** ${winnerCount}\n` +
-          `⏰ **Thời gian còn lại:** <t:${Math.floor(endTime / 1000)}:R>`
-        )
-        .setThumbnail(host.displayAvatarURL({ dynamic: true }))
-        .setImage(interaction.client.user.displayAvatarURL({ dynamic: true, size: 512 }))
-        .setFooter({ text: `📛 Mã giveaway: ${giveawayId}` });
-
-      const msg = await channel.send({ embeds: [embed] });
-
-      // react bằng custom animated emoji (giữ nguyên)
-      try { await msg.react("<a:1261960933270618192:1433286685189341204>"); } catch { /* ignore */ }
-
-      const participants = new Set();
-
-      const filter = (reaction, user) => {
-        if (user.bot) return false;
-        // chấp nhận custom emoji id hoặc fallback 🎉
-        return reaction.emoji.id === "1261960933270618192" || reaction.emoji.name === "🎉";
-      };
-
-      const collector = msg.createReactionCollector({ filter, time: duration * 1000 });
-
-      collector.on("collect", (_, user) => {
-        participants.add(user.id);
-      });
-
-      collector.on("end", async () => {
-        let winners = [];
-        let winnerText;
-
-        if (participants.size === 0) {
-          winnerText = "❌ Không có ai tham gia giveaway này!";
-        } else {
-          const all = Array.from(participants);
-          for (let i = 0; i < winnerCount && all.length > 0; i++) {
-            const index = Math.floor(Math.random() * all.length);
-            winners.push(all.splice(index, 1)[0]);
-          }
-          winnerText = `🏆 **Người chiến thắng:** ${winners.map(id => `<@${id}>`).join(", ")}`;
-        }
-
-        const endEmbed = new EmbedBuilder()
-          .setColor(0x00FF00)
-          .setTitle(`<a:1255341894687260775:1433317867293642858> G I V E A W A Y ĐÃ KẾT THÚC <a:12553406462486160061:1433317989406605383>`)
-          .setDescription(
-            `🎁 **PHẦN THƯỞNG:** ${prize}\n\n` +
-            `${winnerText}\n\n` +
-            `👑 **Người tổ chức:** ${host}\n\n` +
-            `📛 **Mã giveaway:** ${giveawayId}`
-          )
-          .setThumbnail(host.displayAvatarURL({ dynamic: true }))
-          .setImage(interaction.client.user.displayAvatarURL({ dynamic: true, size: 512 }));
-
-        try { await msg.edit({ embeds: [endEmbed] }); } catch {}
-
-        if (winners.length > 0) {
-          await channel.send(`🎊 Chúc mừng ${winners.map(id => `<@${id}>`).join(", ")} đã thắng **${prize}**!`);
-        } else {
-          await channel.send(`❌ Không có ai tham gia giveaway **${prize}**. Mã: **${giveawayId}**`);
-        }
-      });
-
-      return interaction.reply({ content: "✅ Giveaway đã được tạo thành công!", ephemeral: true });
-    } catch (err) {
-      console.error("Giveaway error:", err);
-      return interaction.reply({ content: "❌ Lỗi khi tạo giveaway.", ephemeral: true });
-    }
-  }
-
-  // ---------- MUSIC COMMANDS ----------
-  if (cmd === "play") {
-    const query = interaction.options.getString("query");
-    const memberVoice = interaction.member?.voice?.channel;
-    if (!memberVoice) return interaction.reply({ content: "❗ Bạn phải vào kênh thoại trước!", ephemeral: true });
-    if (!query || !query.trim()) return interaction.reply({ content: "⚠️ Vui lòng cung cấp link YouTube hoặc tên bài.", ephemeral: true });
-
-    await interaction.deferReply();
-
-    try {
-      const search = await client.player.search(query, {
-        requestedBy: interaction.user,
-        searchEngine: QueryType.AUTO
-      });
-
-      if (!search || !search.tracks.length) return interaction.editReply("❌ Không tìm thấy bài hát!");
-
-      const queue = await client.player.createQueue(interaction.guild, {
-        metadata: { channel: interaction.channel },
-        leaveOnEnd: true,
-        leaveOnStop: true,
-        leaveOnEmpty: true
-      });
-
-      try {
-        if (!queue.connection) await queue.connect(memberVoice);
-      } catch (err) {
-        client.player.deleteQueue(interaction.guild.id);
-        console.error("Voice connect error:", err);
-        return interaction.editReply("⚠️ Bot không thể vào voice (kiểm tra quyền).");
-      }
-
-      if (search.playlist) {
-        // add all tracks
-        if (typeof queue.addTracks === "function") queue.addTracks(search.tracks);
-        else search.tracks.forEach(t => queue.addTrack(t));
-        await interaction.editReply(`🎶 Đã thêm playlist vào hàng chờ (${search.tracks.length} bài).`);
-      } else {
-        queue.addTrack(search.tracks[0]);
-        await interaction.editReply(`🎶 Đã thêm **${search.tracks[0].title}** vào hàng chờ.`);
-      }
-
-      if (!queue.playing) await queue.play();
-    } catch (err) {
-      console.error("Play command error:", err);
-      try { await interaction.editReply("❌ Lỗi khi phát nhạc."); } catch {}
-    }
-  }
-
-  if (cmd === "stop") {
-    try {
-      const queue = client.player.getQueue(interaction.guild.id);
-      if (!queue) return interaction.reply({ content: "❌ Không có bài nào đang phát!", ephemeral: true });
-      queue.destroy();
-      return interaction.reply({ content: "⛔ Đã dừng nhạc và rời voice." });
-    } catch (err) {
-      console.error("Stop error:", err);
-      return interaction.reply({ content: "❌ Lỗi khi dừng nhạc.", ephemeral: true });
-    }
-  }
-
-  if (cmd === "skip") {
-    try {
-      const queue = client.player.getQueue(interaction.guild.id);
-      if (!queue || !queue.playing) return interaction.reply({ content: "❌ Không có bài nào đang phát!", ephemeral: true });
-      const current = queue.current;
-      const ok = await queue.skip();
-      if (ok) return interaction.reply({ content: `⏭️ Đã bỏ qua: **${current.title}**` });
-      return interaction.reply({ content: "❌ Không thể bỏ qua bài.", ephemeral: true });
-    } catch (err) {
-      console.error("Skip error:", err);
-      return interaction.reply({ content: "❌ Lỗi khi skip.", ephemeral: true });
-    }
-  }
-
-  if (cmd === "pause") {
-    try {
-      const queue = client.player.getQueue(interaction.guild.id);
-      if (!queue || !queue.playing) return interaction.reply({ content: "❌ Không có bài nào đang phát!", ephemeral: true });
-      queue.setPaused(true);
-      return interaction.reply({ content: "⏸️ Đã tạm dừng." });
-    } catch (err) {
-      console.error("Pause error:", err);
-      return interaction.reply({ content: "❌ Lỗi khi pause.", ephemeral: true });
-    }
-  }
-
-  if (cmd === "resume") {
-    try {
-      const queue = client.player.getQueue(interaction.guild.id);
-      if (!queue) return interaction.reply({ content: "❌ Không có queue.", ephemeral: true });
-      queue.setPaused(false);
-      return interaction.reply({ content: "▶️ Đã tiếp tục phát." });
-    } catch (err) {
-      console.error("Resume error:", err);
-      return interaction.reply({ content: "❌ Lỗi khi resume.", ephemeral: true });
-    }
-  }
-
-  if (cmd === "queue") {
-    try {
-      const queue = client.player.getQueue(interaction.guild.id);
-      if (!queue || !queue.playing) return interaction.reply({ content: "📭 Queue đang trống!", ephemeral: true });
-
-      const current = queue.current;
-      const tracks = queue.tracks.slice(0, 10);
-      const list = tracks.length ? tracks.map((t,i) => `**${i+1}.** ${t.title} — <@${t.requestedBy?.id||"?"}>`).join("\n") : "Không có bài nào trong queue.";
-
-      const embed = new EmbedBuilder()
-        .setColor(MAIN_COLOR)
-        .setTitle("🎶 Danh sách phát")
-        .setDescription(`**Đang phát:** ${current.title}\n\n**Tiếp theo:**\n${list}`)
-        .setFooter({ text: `Tổng bài trong queue: ${queue.tracks.length + (queue.current ? 1 : 0)}` });
-
-      return interaction.reply({ embeds: [embed] });
-    } catch (err) {
-      console.error("Queue error:", err);
-      return interaction.reply({ content: "❌ Lỗi khi lấy queue.", ephemeral: true });
-    }
-  }
-
-  if (cmd === "volume") {
-    try {
-      const value = interaction.options.getInteger("value");
-      const queue = client.player.getQueue(interaction.guild.id);
-      if (!queue) return interaction.reply({ content: "❌ Không có nhạc đang phát!", ephemeral: true });
-      if (!value || value < 1 || value > 200) return interaction.reply({ content: "🔊 Nhập âm lượng hợp lệ (1 - 200).", ephemeral: true });
-
-      queue.setVolume(value);
-      return interaction.reply({ content: `✅ Âm lượng đã đặt thành **${value}%**` });
-    } catch (err) {
-      console.error("Volume error:", err);
-      return interaction.reply({ content: "❌ Lỗi khi đặt volume.", ephemeral: true });
-    }
-  }
-
-  // ---------- UTIL & FUN (unchanged) ----------
-  if (cmd === "ping") return interaction.reply(`🏓 Pong! Độ trễ: ${client.ws.ping}ms`);
-  if (cmd === "love") return interaction.reply(`💞 Mức độ hợp đôi: ${Math.floor(Math.random() * 101)}%`);
-  if (cmd === "rps") return interaction.reply(["✊", "🖐️", "✌️"][Math.floor(Math.random() * 3)]);
-  if (cmd === "8ball") return interaction.reply(["Có", "Không", "Có thể", "Hỏi lại sau nhé~"][Math.floor(Math.random() * 4)]);
-  if (cmd === "mood") return interaction.reply(["😊 Vui vẻ", "😴 Mệt mỏi", "🥰 Hạnh phúc", "🤔 Trầm tư"][Math.floor(Math.random() * 4)]);
-  if (cmd === "quote") return interaction.reply(["✨ Sống là phải vui!", "💫 Bạn làm được!", "🌸 Cứ tiến lên nào!"][Math.floor(Math.random() * 3)]);
-
-  if (cmd === "say") {
-    const text = interaction.options.getString("text");
-    if (!text) return interaction.reply({ content: "⚠️ Bạn chưa nhập nội dung.", ephemeral: true });
-    return interaction.reply({ content: text });
-  }
-
-  if (cmd === "avatar") {
-    const user = interaction.options.getUser("user") || interaction.user;
-    const embed = new EmbedBuilder()
-      .setColor(MAIN_COLOR)
-      .setTitle(`🖼 Avatar của ${user.username}`)
-      .setImage(user.displayAvatarURL({ dynamic: true, size: 512 }));
-    return interaction.reply({ embeds: [embed], ephemeral: true });
-  }
-
-  if (cmd === "xoachat") {
-    if (!hasAdminPermission(interaction)) return interaction.reply({ content: "🚫 Bạn không có quyền dùng lệnh này!", ephemeral: true });
-    const count = interaction.options.getInteger("count");
-    if (!count || count < 1 || count > 99) return interaction.reply({ content: "⚠️ Số lượng phải từ 1–99.", ephemeral: true });
-    try {
-      await interaction.channel.bulkDelete(count, true);
-      return interaction.reply({ content: `🧹 Đã xóa ${count} tin nhắn!`, ephemeral: true });
-    } catch (err) {
-      console.error("bulkDelete error:", err);
-      return interaction.reply({ content: "❌ Không thể xóa tin nhắn (có thể vì tin nhắn quá cũ).", ephemeral: true });
-    }
-  }
-
-  // activity subcommands (admin) — unchanged
-  if (cmd === "activity") {
-    if (!hasAdminPermission(interaction)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
-    const sub = interaction.options.getSubcommand(false);
-    if (sub === "setup") {
-      const ch = interaction.options.getChannel("channel");
-      activityConfig[interaction.guildId] = activityConfig[interaction.guildId] || {};
-      activityConfig[interaction.guildId].channelId = ch.id;
-      saveActivityConfig();
-      return interaction.reply({ content: `✅ Đã đặt kênh log thành <#${ch.id}>`, ephemeral: true });
-    } else if (sub === "enable") {
-      activityConfig[interaction.guildId] = activityConfig[interaction.guildId] || {};
-      activityConfig[interaction.guildId].enabled = true;
-      saveActivityConfig();
-      return interaction.reply({ content: "✅ Đã bật log hoạt động.", ephemeral: true });
-    } else if (sub === "disable") {
-      activityConfig[interaction.guildId] = activityConfig[interaction.guildId] || {};
-      activityConfig[interaction.guildId].enabled = false;
-      saveActivityConfig();
-      return interaction.reply({ content: "✅ Đã tắt log hoạt động.", ephemeral: true });
-    } else {
-      return interaction.reply({ content: "❓ Subcommand không hợp lệ.", ephemeral: true });
-    }
-  }
-
-  // updated help: include music
-  if (cmd === "help") {
-    const helpEmbed = new EmbedBuilder()
-      .setColor(MAIN_COLOR)
-      .setTitle("📚 Danh sách lệnh của Meyia")
-      .setDescription("Các lệnh hiện có:")
-      .addFields(
-        { name: "🎶 Music (slash)", value: "/play, /stop, /skip, /pause, /resume, /queue, /volume", inline: false },
-        { name: "🔧 Tiện ích", value: "/ping, /info, /avatar, /say, /xoachat", inline: false },
-        { name: "🎉 Sự kiện", value: "/giveaway", inline: false },
-        { name: "📝 Log hoạt động (Admin)", value: "/activity", inline: false }
-      );
-    return interaction.reply({ embeds: [helpEmbed], ephemeral: true });
-  }
-
-  if (cmd === "status") {
-    const uptimeSeconds = Math.floor(client.uptime / 1000) || 0;
-    const hours = Math.floor(uptimeSeconds / 3600);
-    const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-    const seconds = uptimeSeconds % 60;
-    const uptimeStr = `${hours}h ${minutes}m ${seconds}s`;
-
-    const embed = new EmbedBuilder()
-      .setColor(MAIN_COLOR)
-      .setTitle("💗 Trạng thái bot")
-      .addFields(
-        { name: "Ping", value: `${client.ws.ping}ms`, inline: true },
-        { name: "Servers", value: `${client.guilds.cache.size}`, inline: true },
-        { name: "Uptime", value: uptimeStr, inline: true }
-      );
-    return interaction.reply({ embeds: [embed], ephemeral: true });
-  }
-
-  if (cmd === "info") {
-    const embed = new EmbedBuilder()
-      .setColor(MAIN_COLOR)
-      .setTitle("🌸 Meyia — All-in-one bot")
-      .setDescription("Một cô trợ lý nhỏ xinh giúp bạn quản lý server & mang lại niềm vui 💕")
-      .addFields(
-        { name: "Developer", value: `<@${OWNER_ID}>`, inline: true },
-        { name: "Version", value: "v1.5.1", inline: true },
-        { name: "Framework", value: "discord.js v14", inline: true }
-      )
-      .setFooter({ text: "💖 Meyia Bot © 2025" });
-    return interaction.reply({ embeds: [embed], ephemeral: true });
-  }
-
-  // Unknown command fallback
-  return interaction.reply({ content: "❓ Lệnh chưa được triển khai.", ephemeral: true });
-});
-// ---------- MESSAGE PREFIX COMMANDS (UNIFIED, fixed duplicate) ----------
-client.on("messageCreate", async (message) => {
-    if (message.author.bot) return;
-    const prefix = "!";
-    if (!message.content.startsWith(prefix)) return;
-
-    const args = message.content.slice(prefix.length).trim().split(/ +/);
-    const cmd = args.shift().toLowerCase();
-    const memberVoice = message.member?.voice?.channel;
-
-    // !play auto
-    if (cmd === "play" && args[0] === "auto") {
-      if (!memberVoice) return message.reply("❗ Bạn phải vào kênh thoại trước!");
-
-      const queue = await client.player.createQueue(message.guild, {
-        metadata: { channel: message.channel },
-        leaveOnEnd: true,
-        leaveOnStop: true,
-        leaveOnEmpty: true
-      });
-
-      try {
-        if (!queue.connection) await queue.connect(memberVoice);
-      } catch {
-        try { client.player.deleteQueue(message.guild.id); } catch {}
-        return message.reply("⚠️ Bot không thể vào voice.");
-      }
-
-      const keywords = ["pop", "anime", "gaming", "chill", "lofi", "remix"];
-      const randomKeyword = keywords[Math.floor(Math.random() * keywords.length)];
-
-      const search = await client.player.search(randomKeyword, {
-        requestedBy: message.author,
-        searchEngine: QueryType.AUTO
-      });
-
-      if (!search || !search.tracks.length) return message.reply("❌ Không tìm thấy bài hát ngẫu nhiên!");
-
-      const track = search.tracks[Math.floor(Math.random() * search.tracks.length)];
-      queue.addTrack(track);
-
-      if (!queue.playing) await queue.play();
-
-      return message.reply(`🎶 Đang phát bài ngẫu nhiên: **${track.title}**`);
-    }
-
-    // !leave
-    if (cmd === "leave") {
-      const queue = client.player.getQueue(message.guild.id);
-      if (!queue) return message.reply("❌ Không có bài nào đang phát!");
-      queue.destroy();
-      return message.reply("⛔ Đã dừng nhạc và rời voice.");
-    }
-
-    // !skipto <số>
-    if (cmd === "skipto") {
-      const queue = client.player.getQueue(message.guild.id);
-      if (!queue || !queue.playing) return message.reply("❌ Không có bài nào đang phát!");
-      const num = parseInt(args[0]);
-      if (isNaN(num) || num < 1 || num > queue.tracks.length) return message.reply("⚠️ Nhập số hợp lệ trong queue!");
-      queue.skipTo(num - 1);
-      return message.reply(`⏭️ Bỏ qua đến bài số **${num}**: ${queue.current?.title || "?"}`);
-    }
-});
-// ...existing code...
-
-// ---------- MESSAGE PREFIX COMMANDS ---------- //
-client.on("messageCreate", async (message) => {
-  if (message.author.bot) return;
-  const prefix = "!";
-  if (!message.content.startsWith(prefix)) return;
-  if(!message.content.startsWith(prefix)) return;
-
-  const args = message.content.slice(prefix.length).trim().split(/ +/);
-  const cmd = args.shift().toLowerCase();
-
-  const memberVoice = message.member?.voice?.channel;
-
-  // ---------- !play auto ----------
-  if (cmd === "play" && args[0] === "auto") {
-    if (!memberVoice) return message.reply("❗ Bạn phải vào kênh thoại trước!");
-
-    // Tạo queue
-    const queue = await client.player.createQueue(message.guild, {
-      metadata: { channel: message.channel },
-      leaveOnEnd: true,
-      leaveOnStop: true,
-      leaveOnEmpty: true
-    });
-
-    try {
-      if (!queue.connection) await queue.connect(memberVoice);
-    } catch {
-      try { client.player.deleteQueue(message.guild.id); } catch {}
-      return message.reply("⚠️ Bot không thể vào voice.");
-    }
-
-    // Search random bài hát (ví dụ dùng 1 số từ khóa phổ biến)
-    const keywords = ["pop", "anime", "gaming", "chill", "lofi", "remix"];
-    const randomKeyword = keywords[Math.floor(Math.random() * keywords.length)];
-
-    const search = await client.player.search(randomKeyword, {
-      requestedBy: message.author,
-      searchEngine: QueryType.AUTO
-    });
-
-    if (!search || !search.tracks.length) return message.reply("❌ Không tìm thấy bài hát ngẫu nhiên!");
-
-    const track = search.tracks[Math.floor(Math.random() * search.tracks.length)];
-    queue.addTrack(track);
-
-    if (!queue.playing) await queue.play();
-
-    return message.reply(`🎶 Đang phát bài ngẫu nhiên: **${track.title}**`);
-  }
-
-  // ---------- !leave ----------
-  if (cmd === "leave") {
-    const queue = client.player.getQueue(message.guild.id);
-    if (!queue) return message.reply("❌ Không có bài nào đang phát!");
-    queue.destroy();
-    return message.reply("⛔ Đã dừng nhạc và rời voice.");
+  // Load reminders from DB and schedule them
+  const now = Date.now();
+  const rows = getPendingReminders.all(now);
+  for (const r of rows) {
+    scheduleReminder(r);
   }
 });
-// === CODE GỐC CỦA BẠN ===
-// ... toàn bộ code index.js bạn đã gửi từ đầu đến cuối ...
-// (không xóa, không sửa, giữ nguyên tất cả)
 
-/* =====================================================================
-   PHẦN CẢI TIẾN THÊM
-   - Auto reconnect voice khi disconnect
-   - Thông báo khi queue kết thúc
-   - Lệnh !skipto <số> cho prefix
-   - Lưu volume riêng cho từng guild
-   - Mini log slash command khi bot ready
-===================================================================== */
-
-// -------- volume config file (ensure dir exists + safe read) -------- //
-const volumePath = path.join(__dirname, "config", "volume.json");
-try {
-  const dir = path.dirname(volumePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(volumePath)) fs.writeFileSync(volumePath, "{}");
-} catch (e) {
-  console.warn("⚠️ Could not ensure volume config path:", e);
-}
-let volumeConfig = {};
-try {
-  volumeConfig = JSON.parse(fs.readFileSync(volumePath, "utf8") || "{}");
-} catch (e) {
-  console.warn("⚠️ volume.json parse error, resetting to {}:", e);
-  fs.writeFileSync(volumePath, "{}");
-  volumeConfig = {};
-}
-
-// Auto reconnect voice khi connection error
-client.player.on("connectionError", (queue, error) => {
-  console.warn(`⚠️ Lỗi kết nối voice ở guild ${queue.guild.id}:`, error);
+// schedule reminder helper
+function scheduleReminder(row) {
+  const delay = row.remindAt - Date.now();
+  if (delay <= 0) {
+    // due now
+    deliverReminder(row).catch(console.error);
+    return;
+  }
   setTimeout(async () => {
-    if (!queue.connection) {
-      try { await queue.connect(queue.voiceChannel); } catch(e){ console.error("Reconnect failed:", e); }
-    }
-  }, 5000);
-});
+    await deliverReminder(row);
+  }, delay);
+}
 
-// Thông báo khi queue kết thúc
-client.player.on("queueEnd", (queue) => {
+async function deliverReminder(row) {
   try {
-    if (queue.metadata?.channel) queue.metadata.channel.send("📭 Queue đã kết thúc. Cảm ơn bạn đã nghe nhạc!").catch(() => {});
-  } catch(e) {}
-});
-
-// Tự động set volume khi queue được tạo
-client.player.on("queueCreate", (queue) => {
-  const vol = volumeConfig[queue.guild.id] || 100;
-  queue.setVolume(vol);
-});
-
-// Log tất cả slash command khi bot ready
-client.once(Events.ClientReady, () => {
-  client.application.commands.cache.forEach(cmd => {
-    console.log(`Slash command loaded: /${cmd.name}`);
-  });
-  // play auto
-  // leave
-  // skipto
-  // ... giữ nguyên tất cả prefix commands như bạn gửi ...
-});
-
-// Prefix command: !skipto <số>
-client.on("messageCreate", async (message) => {
-  if (message.author.bot) return;
-  const prefix = "!";
-  if (!message.content.startsWith(prefix)) return;
-
-  const args = message.content.slice(prefix.length).trim().split(/ +/);
-  const cmd = args.shift().toLowerCase();
-
-  if (cmd === "skipto") {
-    const queue = client.player.getQueue(message.guild.id);
-    if (!queue || !queue.playing) return message.reply("❌ Không có bài nào đang phát!");
-    const num = parseInt(args[0]);
-    if (isNaN(num) || num < 1 || num > queue.tracks.length) return message.reply("⚠️ Nhập số hợp lệ trong queue!");
-    queue.skipTo(num - 1);
-    return message.reply(`⏭️ Bỏ qua đến bài số **${num}**: ${queue.current.title}`);
+    const guild = client.guilds.cache.get(row.guildId);
+    const user = await client.users.fetch(row.userId).catch(() => null);
+    if (user) {
+      user.send(`🔔 Reminder: ${row.message}`).catch(() => {});
+    }
+    // remove from db
+    deleteReminder.run(row.id);
+  } catch (e) {
+    console.error("deliverReminder error:", e);
   }
-});
+}
 
-// Lưu volume khi dùng /volume
+// interaction handler
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName === "volume") {
-    const value = interaction.options.getInteger("value");
-    volumeConfig[interaction.guild.id] = value;
-    fs.writeFileSync(volumePath, JSON.stringify(volumeConfig, null, 2));
+  try {
+    if (!interaction.isChatInputCommand()) return;
+    const cmd = interaction.commandName;
+    // ---------- MODERATION ----------
+    if (cmd === "ban") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
+      const user = interaction.options.getUser("user");
+      const reason = interaction.options.getString("reason") || "Không có lý do";
+      const member = interaction.guild.members.cache.get(user.id);
+      if (!member) return interaction.reply({ content: "Người dùng không nằm trong server.", ephemeral: true });
+      if (!member.bannable) return interaction.reply({ content: "Không thể ban người này (role cao hơn?).", ephemeral: true });
+      await member.ban({ reason }).catch(err => { throw err; });
+      interaction.reply({ content: `✅ Đã banned **${user.tag}**. Lý do: ${reason}` });
+      logToChannel(interaction.guild.id, `🔨 **Ban**: ${user.tag}\nModerator: ${interaction.user.tag}\nReason: ${reason}`);
+      return;
+    }
+
+    if (cmd === "kick") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
+      const user = interaction.options.getUser("user");
+      const reason = interaction.options.getString("reason") || "Không có lý do";
+      const member = interaction.guild.members.cache.get(user.id);
+      if (!member) return interaction.reply({ content: "Người dùng không nằm trong server.", ephemeral: true });
+      if (!member.kickable) return interaction.reply({ content: "Không thể kick người này.", ephemeral: true });
+      await member.kick(reason).catch(err => { throw err; });
+      interaction.reply({ content: `✅ Đã kick **${user.tag}**. Lý do: ${reason}` });
+      logToChannel(interaction.guild.id, `👢 **Kick**: ${user.tag}\nModerator: ${interaction.user.tag}\nReason: ${reason}`);
+      return;
+    }
+
+    if (cmd === "unban") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
+      const id = interaction.options.getString("userid");
+      try {
+        await interaction.guild.bans.remove(id);
+        interaction.reply({ content: `✅ Đã unban ID ${id}` });
+        logToChannel(interaction.guild.id, `♻️ **Unban**: ${id}\nModerator: ${interaction.user.tag}`);
+      } catch (e) {
+        interaction.reply({ content: `❌ Không thể unban ID ${id} — có thể không tồn tại.` , ephemeral: true});
+      }
+      return;
+    }
+
+    if (cmd === "timeout") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
+      const user = interaction.options.getUser("user");
+      const minutes = interaction.options.getInteger("minutes");
+      const reason = interaction.options.getString("reason") || "Không có lý do";
+      const member = interaction.guild.members.cache.get(user.id);
+      if (!member) return interaction.reply({ content: "Người dùng không nằm trong server.", ephemeral: true });
+      const msTimeout = minutes * 60 * 1000;
+      await member.timeout(msTimeout, reason).catch(err => { throw err; });
+      interaction.reply({ content: `⏱️ Đã timeout **${user.tag}** trong ${minutes} phút. Lý do: ${reason}` });
+      logToChannel(interaction.guild.id, `⏱️ **Timeout**: ${user.tag}\nModerator: ${interaction.user.tag}\nDuration: ${minutes}m\nReason: ${reason}`);
+      return;
+    }
+
+    if (cmd === "clear") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
+      const amount = interaction.options.getInteger("amount");
+      if (amount < 1 || amount > 100) return interaction.reply({ content: "⚠️ Số phải trong 1–100.", ephemeral: true });
+      const channel = interaction.channel;
+      const fetched = await channel.bulkDelete(amount, true).catch(err => { return null; });
+      if (!fetched) return interaction.reply({ content: "❌ Không thể xóa (tin quá cũ?).", ephemeral: true });
+      interaction.reply({ content: `🧹 Đã xóa ${fetched.size} tin nhắn.` });
+      logToChannel(interaction.guild.id, `🧹 **Bulk Delete**: ${fetched.size} messages by ${interaction.user.tag} in #${channel.name}`);
+      return;
+    }
+
+    if (cmd === "lock") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
+      const ch = interaction.channel;
+      await ch.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: false }).catch(e => { throw e; });
+      interaction.reply({ content: `🔒 Đã khóa kênh ${ch}.` });
+      logToChannel(interaction.guild.id, `🔒 Channel locked: #${ch.name} by ${interaction.user.tag}`);
+      return;
+    }
+
+    if (cmd === "unlock") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚀 Đã mở khóa kênh.", ephemeral: true });
+      const ch = interaction.channel;
+      await ch.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: null }).catch(e => { throw e; });
+      interaction.reply({ content: `🔓 Đã mở khóa kênh ${ch}.` });
+      logToChannel(interaction.guild.id, `🔓 Channel unlocked: #${ch.name} by ${interaction.user.tag}`);
+      return;
+    }
+
+    if (cmd === "mute") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
+      const user = interaction.options.getUser("user");
+      const minutes = interaction.options.getInteger("minutes") || 0;
+      const member = interaction.guild.members.cache.get(user.id);
+      if (!member) return interaction.reply({ content: "Người dùng không nằm trong server.", ephemeral: true });
+      // use timeout if available
+      if (minutes > 0) {
+        await member.timeout(minutes * 60 * 1000, `Muted by ${interaction.user.tag}`).catch(() => {});
+        interaction.reply({ content: `🔇 Đã tạm mute ${user.tag} trong ${minutes} phút (timeout).` });
+      } else {
+        // fallback: role-based mute
+        let role = interaction.guild.roles.cache.find(r => r.name === "Meiya Muted");
+        if (!role) {
+          role = await interaction.guild.roles.create({ name: "Meiya Muted", permissions: [] });
+          // apply overwrites to all channels
+          for (const ch of interaction.guild.channels.cache.values()) {
+            try { await ch.permissionOverwrites.edit(role, { SendMessages: false, AddReactions: false, Speak: false }).catch(()=>{}); } catch {}
+          }
+        }
+        await member.roles.add(role).catch(e => {});
+        interaction.reply({ content: `🔇 Đã thêm role Muted cho ${user.tag}` });
+      }
+      logToChannel(interaction.guild.id, `🔇 Muted ${user.tag} by ${interaction.user.tag}`);
+      return;
+    }
+
+    if (cmd === "unmute") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
+      const user = interaction.options.getUser("user");
+      const member = interaction.guild.members.cache.get(user.id);
+      if (!member) return interaction.reply({ content: "Người dùng không nằm trong server.", ephemeral: true });
+      // remove role if exists and try to clear timeout
+      const role = interaction.guild.roles.cache.find(r => r.name === "Meiya Muted");
+      if (role) { await member.roles.remove(role).catch(()=>{}); }
+      await member.timeout(null).catch(()=>{});
+      interaction.reply({ content: `🔊 Đã unmute ${user.tag}` });
+      logToChannel(interaction.guild.id, `🔊 Unmuted ${user.tag} by ${interaction.user.tag}`);
+      return;
+    }
+
+    // WARN system
+    if (cmd === "warn") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
+      const target = interaction.options.getUser("user");
+      const reason = interaction.options.getString("reason");
+      insertWarning.run(interaction.guild.id, target.id, interaction.user.id, reason, Date.now());
+      interaction.reply({ content: `⚠️ Đã warn **${target.tag}**. Lý do: ${reason}` });
+      logToChannel(interaction.guild.id, `⚠️ Warn: ${target.tag}\nModerator: ${interaction.user.tag}\nReason: ${reason}`);
+      return;
+    }
+
+    if (cmd === "warnings") {
+      const target = interaction.options.getUser("user");
+      const rows = getWarnings.all(interaction.guild.id, target.id);
+      if (!rows || !rows.length) return interaction.reply({ content: `✅ Không có warning cho ${target.tag}`, ephemeral: true });
+      const desc = rows.slice(0,10).map(r => `• [${new Date(r.timestamp).toLocaleString()}] ${r.reason} (by <@${r.moderatorId}>)`).join("\n");
+      const embed = new EmbedBuilder().setColor(MAIN_COLOR).setTitle(`Warnings for ${target.tag}`).setDescription(desc);
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    if (cmd === "clearwarn") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
+      const target = interaction.options.getUser("user");
+      deleteWarnings.run(interaction.guild.id, target.id);
+      interaction.reply({ content: `✅ Đã xóa warnings cho ${target.tag}` });
+      logToChannel(interaction.guild.id, `🧾 Cleared warnings for ${target.tag} by ${interaction.user.tag}`);
+      return;
+    }
+
+    if (cmd === "setlog") {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
+      const channel = interaction.options.getChannel("channel");
+      setGuildConfig.run(interaction.guild.id, channel.id, null);
+      interaction.reply({ content: `✅ Đã đặt kênh log: <#${channel.id}>`, ephemeral: true });
+      return;
+    }
+
+    // ---------- UTIL ----------
+    if (cmd === "serverinfo") {
+      const g = interaction.guild;
+      const embed = new EmbedBuilder()
+        .setTitle(`${g.name} — Server info`)
+        .setColor(MAIN_COLOR)
+        .addFields(
+          { name: "ID", value: g.id, inline: true },
+          { name: "Members", value: `${g.memberCount}`, inline: true },
+          { name: "Roles", value: `${g.roles.cache.size}`, inline: true },
+          { name: "Channels", value: `${g.channels.cache.size}`, inline: true },
+          { name: "Created", value: `${g.createdAt.toDateString()}`, inline: true }
+        )
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    if (cmd === "userinfo") {
+      const user = interaction.options.getUser("user") || interaction.user;
+      const member = interaction.guild.members.cache.get(user.id);
+      const embed = new EmbedBuilder()
+        .setTitle(`${user.tag} — Info`)
+        .setThumbnail(user.displayAvatarURL({ dynamic: true }))
+        .setColor(MAIN_COLOR)
+        .addFields(
+          { name: "ID", value: user.id, inline: true },
+          { name: "Bot?", value: String(user.bot), inline: true },
+          { name: "Joined server", value: member ? String(member.joinedAt) : "N/A", inline: true }
+        );
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    if (cmd === "avatar") {
+      const user = interaction.options.getUser("user") || interaction.user;
+      const embed = new EmbedBuilder().setTitle(`${user.tag} — Avatar`).setImage(user.displayAvatarURL({ dynamic: true, size: 1024 })).setColor(MAIN_COLOR);
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    if (cmd === "ping") {
+      return interaction.reply({ content: `🏓 Pong — WS: ${client.ws.ping}ms` });
+    }
+
+    if (cmd === "uptime") {
+      const total = client.uptime || 0;
+      const s = Math.floor(total/1000)%60;
+      const m = Math.floor(total/1000/60)%60;
+      const h = Math.floor(total/1000/60/60);
+      return interaction.reply({ content: `⏱️ Uptime: ${h}h ${m}m ${s}s` });
+    }
+
+    if (cmd === "botinfo") {
+      const mem = process.memoryUsage().rss / (1024*1024);
+      const embed = new EmbedBuilder()
+        .setTitle("Meiya Bot")
+        .setColor(MAIN_COLOR)
+        .addFields(
+          { name: "Owner", value: `<@${OWNER_ID}>`, inline: true },
+          { name: "Guilds", value: String(client.guilds.cache.size), inline: true },
+          { name: "Memory (RSS)", value: `${Math.round(mem)} MB`, inline: true }
+        );
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    if (cmd === "say") {
+      const text = interaction.options.getString("text");
+      await interaction.reply({ content: "✅ Sent (ephemeral)", ephemeral: true });
+      // send to channel
+      interaction.channel.send({ content: text }).catch(()=>{});
+      return;
+    }
+
+    if (cmd === "embed") {
+      const title = interaction.options.getString("title");
+      const desc = interaction.options.getString("description");
+      const em = new EmbedBuilder().setTitle(title).setDescription(desc).setColor(MAIN_COLOR);
+      await interaction.reply({ embeds: [em] });
+      return;
+    }
+
+    if (cmd === "poll") {
+      const q = interaction.options.getString("question");
+      const o1 = interaction.options.getString("option1");
+      const o2 = interaction.options.getString("option2");
+      const o3 = interaction.options.getString("option3");
+      const o4 = interaction.options.getString("option4");
+      const options = [o1, o2].concat([o3, o4].filter(Boolean));
+      const em = new EmbedBuilder().setTitle("📊 " + q).setDescription(options.map((o,i)=>`${i+1}. ${o}`).join("\n")).setColor(MAIN_COLOR);
+      const msg = await interaction.reply({ embeds: [em], fetchReply: true });
+      const emojis = ["1️⃣","2️⃣","3️⃣","4️⃣"];
+      for (let i=0;i<options.length;i++) await msg.react(emojis[i]);
+      return;
+    }
+
+    if (cmd === "roleinfo") {
+      const role = interaction.options.getRole("role");
+      const em = new EmbedBuilder().setTitle(`Role: ${role.name}`).setColor(MAIN_COLOR)
+        .addFields(
+          { name: "ID", value: role.id, inline: true },
+          { name: "Members with role", value: `${role.members.size}`, inline: true },
+          { name: "Position", value: String(role.position), inline: true }
+        );
+      return interaction.reply({ embeds: [em] });
+    }
+
+    if (cmd === "quote") {
+      const quotes = ["✨ Hãy làm tốt hôm nay.", "🌸 Bạn làm được!", "💫 Mỗi ngày là cơ hội mới."];
+      return interaction.reply(quotes[Math.floor(Math.random()*quotes.length)]);
+    }
+
+    // REMINDERS
+    if (cmd === "remind") {
+      const timeStr = interaction.options.getString("time");
+      const text = interaction.options.getString("text");
+      // parse simple format like 10m 2h 1d
+      let msTime = 0;
+      try {
+        msTime = ms(timeStr); // using ms package
+      } catch { msTime = 0; }
+      if (!msTime) return interaction.reply({ content: "⏳ Không hiểu thời gian (ví dụ: 10m, 2h, 1d).", ephemeral: true });
+      const remindAt = Date.now() + msTime;
+      const createdAt = Date.now();
+      const info = insertReminder.run(interaction.guild.id, interaction.user.id, remindAt, text, createdAt);
+      const id = info.lastInsertRowid;
+      // schedule
+      scheduleReminder({ id, guildId: interaction.guild.id, userId: interaction.user.id, remindAt, message: text, createdAt });
+      interaction.reply({ content: `🔔 Reminder đã đặt cho <t:${Math.floor(remindAt/1000)}:F>`, ephemeral: true });
+      return;
+    }
+
+    // unknown fallback
+    return interaction.reply({ content: "❓ Lệnh chưa được triển khai.", ephemeral: true });
+
+  } catch (err) {
+    console.error("interaction error:", err);
+    try { if (interaction.replied || interaction.deferred) interaction.followUp({ content: "❌ Lỗi khi chạy lệnh.", ephemeral: true }); else interaction.reply({ content: "❌ Lỗi khi chạy lệnh.", ephemeral: true }); } catch {}
   }
 });
 
-// -------- LOGIN (fixed duplicates) -------- //
-const token = process.env.TOKEN || process.env.DISCORD_TOKEN;
+// logging helper
+function logToChannel(guildId, text) {
+  try {
+    const cfg = getGuildConfig.get(guildId);
+    if (!cfg || !cfg.logChannelId) return;
+    const g = client.guilds.cache.get(guildId);
+    if (!g) return;
+    const ch = g.channels.cache.get(cfg.logChannelId);
+    if (!ch) return;
+    ch.send({ content: text }).catch(()=>{});
+  } catch (e) { console.warn("logToChannel error:", e); }
+}
+
+// login
+const token = process.env.TOKEN;
 if (!token) {
-    console.error("❌ Thiếu TOKEN trong .env");
-    process.exit(1);
+  console.error("❌ Missing TOKEN in .env");
+  process.exit(1);
 }
 client.login(token).catch(err => {
-    console.error("Login error:", err);
-    process.exit(1);
-}); 
+  console.error("Login error:", err);
+  process.exit(1);
+});
