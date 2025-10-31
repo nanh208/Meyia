@@ -1,8 +1,7 @@
-// index.js — Meyia all-in-one (v1.3.0) — chỉnh sửa để hỗ trợ sk-proj-...
-// Tác giả: bạn + hỗ trợ từ ChatGPT
-// Yêu cầu: node 18+, discord.js v14, openai package, dotenv, ms, discord-giveaways
-
-require("dotenv").config(); // phải load dotenv ngay đầu
+// index.js — Meyia all-in-one (v1.3.0) — full integrated with activity.json
+require("dotenv").config();
+const fs = require("fs");
+const path = require("path");
 const {
   Client,
   Events,
@@ -15,9 +14,22 @@ const { GiveawaysManager } = require("discord-giveaways");
 const ms = require("ms");
 const { OpenAI } = require("openai");
 
-// -------------------------
-// ⚙️ CẤU HÌNH & KHỞI TẠO
-// -------------------------
+// ----------- LOAD CONFIG -----------
+const activityPath = path.join(__dirname, "config", "activity.json");
+if (!fs.existsSync(path.dirname(activityPath))) fs.mkdirSync(path.dirname(activityPath), { recursive: true });
+if (!fs.existsSync(activityPath)) fs.writeFileSync(activityPath, "{}");
+let activityConfig = JSON.parse(fs.readFileSync(activityPath, "utf8"));
+function saveActivityConfig() {
+  fs.writeFileSync(activityPath, JSON.stringify(activityConfig, null, 2));
+}
+function logActivity(guildId, msg) {
+  const cfg = activityConfig[guildId];
+  if (!cfg || !cfg.enabled || !cfg.channelId) return;
+  const ch = client.channels.cache.get(cfg.channelId);
+  if (ch) ch.send(msg).catch(() => {});
+}
+
+// ----------- CLIENT INIT -----------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -28,131 +40,46 @@ const client = new Client({
   ]
 });
 
-// --- OpenAI init: hỗ trợ sk-... và sk-proj-...
+// ----------- SETTINGS -----------
+const OWNER_ID = process.env.OWNER_ID || "1409222785154416651";
+const AI_ENABLED = false;
 const rawKey = process.env.OPENAI_API_KEY;
 const openaiOptions = {};
-
-if (!rawKey) {
-  console.error("❌ OPENAI_API_KEY chưa thiết lập. Thêm vào .env: OPENAI_API_KEY=sk-...");
-  // không throw để bot vẫn có thể khởi động (nhưng API call sẽ fail). Tuy nhiên khuyến nghị dừng.
-} else {
-  // nếu key là sk-proj-... thì cần project id (proj_...)
-  if (rawKey.startsWith("sk-proj-")) {
-    if (!process.env.OPENAI_PROJECT) {
-      console.error("❌ Bạn đang dùng key bắt đầu bằng sk-proj- nhưng chưa thiết lập OPENAI_PROJECT trong .env");
-      console.error("Ví dụ: OPENAI_PROJECT=proj_xxxxxxxx");
-      // vẫn set apiKey để lỗi rõ hơn khi gọi; thông báo cho dev
-    } else {
-      openaiOptions.project = process.env.OPENAI_PROJECT;
-    }
-  }
-  // optional organization
-  if (process.env.OPENAI_ORG) openaiOptions.organization = process.env.OPENAI_ORG;
-
-  openaiOptions.apiKey = rawKey;
-}
-
-// tạo client OpenAI
+if (rawKey) openaiOptions.apiKey = rawKey;
 const openai = new OpenAI(openaiOptions);
-
-const OWNER_ID = process.env.OWNER_ID || "1409222785154416651";
-
-// Kênh active
-let activeChatChannel = null;
-let activeCuteChannel = null;
-
-// Mute
 let mutedChannels = new Set();
 
-// Bộ nhớ ngắn hạn trong RAM
-const channelHistories = new Map(); // channelId -> array of last messages (objects {id, authorId, content, timestamp})
-const lastResponseTime = new Map(); // channelId -> timestamp of last bot reply (anti spam)
-const messagesSinceMention = new Map(); // channelId -> count messages since last mention
-const passiveChecksDone = new Map(); // channelId -> number of 10-message passive checks already done (max 3)
-
-// các map cho việc tính toán reading attempts etc
-const lastPassiveCheckIndex = new Map(); // channelId -> last count mod 10 processed
-
-// THAM SỐ
-const MAX_HISTORY = 15; // lưu 15 tin nhắn gần nhất
-const READ_ON_MENTION = 5; // đọc 5 tin nhắn khi có nhắc tên
-const PASSIVE_INTERVAL = 10; // mỗi 10 tin nhắn ko nhắc -> 30% chance
-const PASSIVE_MAX_TRIES = 3; // tối đa 3 lần kiểm tra
-const ANTI_SPAM_MS = 5000; // 5s giữa các phản hồi bot trong cùng kênh
-
-// -------------------------
-// ⏰ HÀM TIỆN ÍCH
-// -------------------------
+// ----------- HELPERS -----------
 function formatTime(msTime) {
   if (msTime <= 0) return "0 giây";
-  const seconds = Math.floor((msTime / 1000) % 60);
-  const minutes = Math.floor((msTime / (1000 * 60)) % 60);
-  const hours = Math.floor((msTime / (1000 * 60 * 60)) % 24);
-  const days = Math.floor(msTime / (1000 * 60 * 60 * 24));
+  const s = Math.floor((msTime / 1000) % 60);
+  const m = Math.floor((msTime / (1000 * 60)) % 60);
+  const h = Math.floor((msTime / (1000 * 60 * 60)) % 24);
+  const d = Math.floor(msTime / (1000 * 60 * 60 * 24));
   const parts = [];
-  if (days) parts.push(`${days} ngày`);
-  if (hours) parts.push(`${hours} giờ`);
-  if (minutes) parts.push(`${minutes} phút`);
-  if (seconds) parts.push(`${seconds} giây`);
+  if (d) parts.push(`${d} ngày`);
+  if (h) parts.push(`${h} giờ`);
+  if (m) parts.push(`${m} phút`);
+  if (s) parts.push(`${s} giây`);
   return parts.join(", ");
 }
-
-// loại bỏ dấu tiếng Việt và chuẩn hoá chữ để check mention không phân biệt dấu/hoa
-function normalizeText(s) {
-  if (!s) return "";
-  return s
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .toLowerCase();
+function hasAdminPermission(i) {
+  if (!i) return false;
+  if (i.member)
+    return i.member.permissions?.has(PermissionFlagsBits.Administrator) ||
+      i.user?.id === OWNER_ID ||
+      i.member.permissions?.has(PermissionFlagsBits.ManageGuild);
+  if (i.permissions)
+    return i.permissions.has(PermissionFlagsBits.Administrator) ||
+      i.user?.id === OWNER_ID ||
+      i.permissions.has(PermissionFlagsBits.ManageGuild);
+  return false;
 }
-
-function containsBotName(raw) {
-  const norm = normalizeText(raw);
-  return /\bmeyia\b/.test(norm);
-}
-
-// lưu lịch sử tin nhắn cho kênh (chỉ giữ MAX_HISTORY)
-function pushChannelHistory(channelId, msgObj) {
-  const arr = channelHistories.get(channelId) || [];
-  arr.push(msgObj);
-  while (arr.length > MAX_HISTORY) arr.shift();
-  channelHistories.set(channelId, arr);
-}
-
-// Lấy N tin nhắn trước đó
-function getRecentMessages(channelId, n = 5) {
-  const arr = channelHistories.get(channelId) || [];
-  return arr.slice(-n);
-}
-
-// đặt trạng thái active chat/cute
-function setActiveChat(channelId) { activeChatChannel = channelId; resetChannelMemory(channelId); }
-function setActiveCute(channelId) { activeCuteChannel = channelId; resetChannelMemory(channelId); }
-
-// reset bộ đếm / memory khi bật kênh
-function resetChannelMemory(channelId) {
-  channelHistories.set(channelId, []);
-  messagesSinceMention.set(channelId, 0);
-  passiveChecksDone.set(channelId, 0);
-  lastResponseTime.set(channelId, 0);
-  lastPassiveCheckIndex.set(channelId, 0);
-}
-
-// mute / unmute
-function muteChannel(channelId) { mutedChannels.add(channelId); }
-function unmuteChannel(channelId) { mutedChannels.delete(channelId); }
-
-// get status string
 function getStatusString() {
-  return `📡 **Trạng thái bot:**\n` +
-    `🧠 Chat AI: ${activeChatChannel ? `<#${activeChatChannel}>` : "❌ Chưa bật"}\n` +
-    `💖 BotCute: ${activeCuteChannel ? `<#${activeCuteChannel}>` : "❌ Chưa bật"}\n` +
-    `🔇 Đang tắt chat: ${mutedChannels.size ? Array.from(mutedChannels).map(id => `<#${id}>`).join(", ") : "Không"}`;
+  return `📡 **Trạng thái bot:**\n🧠 Chat AI: ${AI_ENABLED ? "✅ Bật" : "🔒 Tắt"}\n🔇 Kênh mute: ${mutedChannels.size ? Array.from(mutedChannels).map(id => `<#${id}>`).join(", ") : "Không"}`;
 }
 
-// -------------------------
-// 🎁 GIVEAWAY MANAGER (giữ nguyên icon như yêu cầu)
-// -------------------------
+// ----------- GIVEAWAY MANAGER -----------
 const manager = new GiveawaysManager(client, {
   storage: "./giveaways.json",
   default: {
@@ -165,25 +92,13 @@ const manager = new GiveawaysManager(client, {
 });
 client.giveawaysManager = manager;
 
-// -------------------------
-// 🚀 KHỞI ĐỘNG BOT & ĐĂNG LỆNH SLASH
-// -------------------------
-client.once(Events.ClientReady, async (readyClient) => {
-  console.log(`✅ Bot MEYIA đã sẵn sàng (${readyClient.user.tag})`);
+// ----------- READY -----------
+client.once(Events.ClientReady, async () => {
+  console.log(`✅ Bot MEYIA đã sẵn sàng (${client.user.tag})`);
 
-  // Thông tin debug nhỏ về OpenAI config (không in full key)
-  if (rawKey) {
-    console.log("🔑 OPENAI_API_KEY tải từ env — prefix:", rawKey.slice(0, 10));
-    if (openaiOptions.project) console.log("📁 OPENAI_PROJECT =", openaiOptions.project);
-    if (openaiOptions.organization) console.log("🏢 OPENAI_ORG =", openaiOptions.organization);
-  } else {
-    console.warn("⚠️ OPENAI_API_KEY không được cấu hình — mọi yêu cầu đến OpenAI sẽ fail.");
-  }
-
-  // đăng ký slash commands
   await client.application.commands.set([
-    { name: "help", description: "Xem tất cả các lệnh của Meyia" },
-    { name: "status", description: "Xem trạng thái hiện tại của bot" },
+    { name: "help", description: "Xem các lệnh" },
+    { name: "status", description: "Xem trạng thái bot" },
     {
       name: "giveaway",
       description: "Tạo giveaway mới",
@@ -193,69 +108,49 @@ client.once(Events.ClientReady, async (readyClient) => {
         { name: "prize", description: "Phần thưởng", type: ApplicationCommandOptionType.String, required: true }
       ]
     },
-    { name: "avatar", description: "Xem avatar của ai đó hoặc chính bạn", options: [{ name: "user", description: "Người dùng cần xem", type: ApplicationCommandOptionType.User, required: false }] },
-    { name: "chatbot", description: "Thiết lập kênh chat cho Meyia", options: [{ name: "kenh", description: "Chọn kênh bot sẽ chat", type: ApplicationCommandOptionType.Channel, required: true }] },
-    { name: "botcute", description: "Thiết lập kênh trò chuyện đáng yêu riêng biệt cho Meyia", options: [{ name: "kenh", description: "Chọn kênh botcute sẽ chat", type: ApplicationCommandOptionType.Channel, required: true }] },
-    { name: "info", description: "Xem thông tin chi tiết về bot Meyia" }
+    {
+      name: "activity",
+      description: "Quản lý log hoạt động (chỉ admin)",
+      options: [
+        { name: "setup", description: "Chọn kênh log", type: 1, options: [{ name: "channel", description: "Kênh log", type: ApplicationCommandOptionType.Channel, required: true }] },
+        { name: "enable", description: "Bật log hoạt động", type: 1 },
+        { name: "disable", description: "Tắt log hoạt động", type: 1 }
+      ]
+    },
+    { name: "avatar", description: "Xem avatar", options: [{ name: "user", description: "Người cần xem", type: ApplicationCommandOptionType.User, required: false }] },
+    { name: "info", description: "Thông tin bot" },
+    { name: "xoachat", description: "Xóa tin nhắn (admin)", options: [{ name: "count", description: "Số tin nhắn (1-99)", type: ApplicationCommandOptionType.Integer, required: true }] },
+    { name: "ping", description: "Kiểm tra độ trễ" },
+    { name: "8ball", description: "Quả cầu tiên tri" },
+    { name: "rps", description: "Oẳn tù tì" },
+    { name: "love", description: "Độ hợp đôi" },
+    { name: "hug", description: "Ôm ai đó", options: [{ name: "user", description: "Người nhận", type: ApplicationCommandOptionType.User, required: false }] },
+    { name: "slap", description: "Đánh yêu", options: [{ name: "user", description: "Người nhận", type: ApplicationCommandOptionType.User, required: false }] },
+    { name: "say", description: "Cho bot nói lại", options: [{ name: "text", description: "Nội dung", type: ApplicationCommandOptionType.String, required: true }] },
+    { name: "quote", description: "Trích dẫn ngẫu nhiên" },
+    { name: "mood", description: "Tâm trạng Meyia" },
+    { name: "birthday", description: "Sinh nhật (nội bộ)" }
   ]);
-
-  console.log("✅ Slash commands đã đăng ký!");
+  console.log("✅ Slash commands đã đăng ký.");
 });
 
-// -------------------------
-// 🎯 XỬ LÝ SLASH COMMANDS
-// -------------------------
+// ----------- INTERACTIONS -----------
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
+  const cmd = interaction.commandName;
+  const isAdmin = hasAdminPermission(interaction);
 
-  // HELP
-  if (interaction.commandName === "help") {
-    const embed = new EmbedBuilder()
-      .setColor("#FFC0CB")
-      .setTitle("📜 Lệnh của Meyia")
-      .setDescription(`
-**🎀 Giveaway**
-\`/giveaway\` – Tạo giveaway mới  
-
-**💬 Chatbot**
-\`/chatbot\` – Thiết lập kênh để Meyia trò chuyện  
-\`/botcute\` – Kênh trò chuyện đáng yêu riêng biệt  
-\`!mute\` – Tạm dừng chat của Meyia trong kênh  
-\`!unmute\` – Gỡ mute cho kênh
-
-**🖼️ Tiện ích**
-\`/avatar\` – Xem avatar của ai đó  
-\`/info\` – Xem thông tin về bot  
-\`/status\` – Kiểm tra trạng thái bot  
-\`!shutdown\` – Tắt bot  
-\`!restart\` – Khởi động lại bot  
-
-> 💡 Gọi Meyia bằng cách nhắc tên (ví dụ: "Meyia ơi", "ê Meyia") — không phân biệt dấu/viết hoa.
-`)
-      .setFooter({ text: "Meyia — đáng yêu và luôn lắng nghe 💖" });
-    return interaction.reply({ embeds: [embed], ephemeral: true });
+  if (cmd === "help") {
+    return interaction.reply({
+      content: "**Lệnh của Meyia:**\n/help, /status, /giveaway, /activity, /avatar, /ping, /xoachat, /info, /8ball, /rps, /love, /hug, /slap, /say, /quote, /mood, /birthday",
+      ephemeral: true
+    });
   }
 
-  // STATUS
-  if (interaction.commandName === "status") {
-    return interaction.reply({ content: getStatusString(), ephemeral: true });
-  }
+  if (cmd === "status") return interaction.reply({ content: getStatusString(), ephemeral: true });
 
-  // AVATAR
-  if (interaction.commandName === "avatar") {
-    const user = interaction.options.getUser("user") || interaction.user;
-    const avatarURL = user.displayAvatarURL({ dynamic: true, size: 1024 });
-    const embed = new EmbedBuilder()
-      .setColor("#FF69B4")
-      .setTitle(`🖼️ Avatar của ${user.tag}`)
-      .setImage(avatarURL)
-      .setFooter({ text: `Yêu cầu bởi ${interaction.user.tag}` })
-      .setTimestamp();
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  // GIVEAWAY
-  if (interaction.commandName === "giveaway") {
+  // 🎁 GIVEAWAY (phiên bản mới)
+  if (cmd === "giveaway") {
     if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages))
       return interaction.reply({ content: "❌ Bạn không có quyền tạo giveaway!", ephemeral: true });
 
@@ -281,57 +176,40 @@ client.on(Events.InteractionCreate, async (interaction) => {
         `⏳ **Còn lại:** ${formatTime(endTime - Date.now())}`
       )
       .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
-      .setImage(interaction.client.user.displayAvatarURL({ size: 512 }))
       .setFooter({ text: `🎟️ Mã giveaway: ${code}` });
 
     const msg = await interaction.channel.send({ embeds: [embed] });
     try {
       await msg.react("<a:1261960933270618192:1433286685189341204>");
-    } catch (err) {
-      console.warn("Không thể react bằng custom emoji (kiểm tra quyền hoặc emoji tồn tại).", err);
-    }
+    } catch {}
 
     const updateEmbed = async () => {
       const remaining = endTime - Date.now();
       const newEmbed = EmbedBuilder.from(embed).setDescription(
         `🎁 **PHẦN THƯỞNG:** **${prize}**\n\n` +
         `👑 **Người tổ chức:** ${interaction.user}\n` +
-       `<a:sparkleheart:1433317989406605383> Bấm emoji <a:1261960933270618192:1433286685189341204> để tham gia!`+
+        `<a:12553406462486160061:1433317989406605383> Bấm emoji <a:1261960933270618192:1433286685189341204> để tham gia!\n\n` +
         `🎯 **Số lượng giải:** ${winnerCount}\n` +
         `⏳ **Còn lại:** ${formatTime(Math.max(0, remaining))}`
       );
-      try { await msg.edit({ embeds: [newEmbed] }); } catch (err) { console.warn("Không thể update embed:", err); }
+      try { await msg.edit({ embeds: [newEmbed] }); } catch {}
     };
-
-    await updateEmbed();
 
     const countdown = setInterval(async () => {
       const remaining = endTime - Date.now();
       if (remaining <= 0) {
         clearInterval(countdown);
-        let fetchedMsg;
-        try { fetchedMsg = await interaction.channel.messages.fetch(msg.id); } catch (err) {
-          console.error("Không fetch được message giveaway:", err);
-          await interaction.followUp({ content: "❌ Đã xảy ra lỗi khi kết thúc giveaway (không fetch được tin nhắn).", ephemeral: true });
-          return;
-        }
-
-        const reaction = fetchedMsg.reactions.cache.get("<a:1261960933270618192:1433286685189341204>") || fetchedMsg.reactions.cache.first();
+        const fetched = await interaction.channel.messages.fetch(msg.id);
+        const reaction = fetched.reactions.cache.get("<a:1261960933270618192:1433286685189341204>") || fetched.reactions.cache.first();
         const users = reaction ? (await reaction.users.fetch()).filter(u => !u.bot).map(u => u) : [];
 
-        if (!users || users.length === 0) {
+        if (!users.length) {
           const embedEnd = EmbedBuilder.from(embed)
             .setColor("#555")
-            .setTitle("<a:1255341894687260775:1433317867293642858> 🎀 ＧＩＶＥＡＷＡＹ KẾT THÚC 🎀 <a:1255341894687260775:1433317867293642858>")
-            .setDescription(
-              `🎁 **PHẦN THƯỞNG:** **${prize}**\n\n` +
-              `😢 Không có ai tham gia...\n\n` +
-              `👑 **Người tổ chức:** ${interaction.user}`
-            );
-          await fetchedMsg.edit({ embeds: [embedEnd] });
-          await fetchedMsg.reply(`😢 Không có ai tham gia giveaway **${prize}**. Mã: **${code}**`);
-          await interaction.followUp({ content: `✅ Giveaway kết thúc. Không có ai tham gia.`, ephemeral: true });
-          return;
+            .setTitle("🎀 GIVEAWAY KẾT THÚC 🎀")
+            .setDescription(`🎁 **${prize}**\n😢 Không có ai tham gia.\n👑 **${interaction.user}**`);
+          await fetched.edit({ embeds: [embedEnd] });
+          return interaction.followUp({ content: "✅ Giveaway kết thúc, không ai tham gia.", ephemeral: true });
         }
 
         const shuffled = users.sort(() => Math.random() - 0.5);
@@ -340,259 +218,93 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         const embedEnd = EmbedBuilder.from(embed)
           .setColor("#00FF7F")
-          .setTitle("<a:1255341894687260775:1433317867293642858> 💫 ＧＩＶＥＡＷＡＹ ĐÃ KẾT THÚC 💫 <a:1255341894687260775:1433317867293642858>")
-          .setDescription(
-            `🎁 **PHẦN THƯỞNG:** **${prize}**\n\n` +
-            `🏆 **Người chiến thắng:** ${winnersText}\n\n` +
-            `👑 **Người tổ chức:** ${interaction.user}`
-          );
-
-        await fetchedMsg.edit({ embeds: [embedEnd] });
-        await fetchedMsg.reply(`🎊 Xin chúc mừng ${winnersText} đã thắng **${prize}**! Mã giveaway: **${code}**`);
-        await interaction.followUp({ content: `✅ Giveaway kết thúc. Người thắng: ${winnersText}`, ephemeral: true });
-        return;
+          .setTitle("💫 GIVEAWAY ĐÃ KẾT THÚC 💫")
+          .setDescription(`🎁 **${prize}**\n🏆 Người thắng: ${winnersText}\n👑 Người tổ chức: ${interaction.user}`);
+        await fetched.edit({ embeds: [embedEnd] });
+        await fetched.reply(`🎊 Chúc mừng ${winnersText} đã thắng **${prize}** 🎉`);
+        return interaction.followUp({ content: "✅ Giveaway kết thúc!", ephemeral: true });
       } else {
         await updateEmbed();
       }
-    }, 10_000);
+    }, 10000);
 
-    await interaction.editReply({ content: `✅ Giveaway đã được tạo!\n💌 Mã: **${code}**` });
+    return interaction.editReply({ content: `✅ Giveaway đã được tạo!\n💌 Mã: **${code}**` });
   }
 
-  // CHATBOT
-  if (interaction.commandName === "chatbot") {
-    const channel = interaction.options.getChannel("kenh");
-    setActiveChat(channel.id);
-    return interaction.reply(`✅ Meyia sẽ trò chuyện trong kênh: ${channel}`);
+  // 📊 ACTIVITY
+  if (cmd === "activity") {
+    if (!hasAdminPermission(interaction))
+      return interaction.reply({ content: "❌ Chỉ admin được phép dùng.", ephemeral: true });
+
+    const sub = interaction.options.getSubcommand();
+    const guildId = interaction.guild.id;
+    activityConfig[guildId] = activityConfig[guildId] || { enabled: false, channelId: null };
+
+    if (sub === "setup") {
+      const ch = interaction.options.getChannel("channel");
+      if (!ch) return interaction.reply({ content: "⚠️ Hãy chọn kênh hợp lệ.", ephemeral: true });
+      activityConfig[guildId].channelId = ch.id;
+      saveActivityConfig();
+      return interaction.reply({ content: `✅ Đã đặt kênh log: ${ch}.`, ephemeral: true });
+    }
+
+    if (sub === "enable") {
+      if (!activityConfig[guildId].channelId)
+        return interaction.reply({ content: "⚠️ Chạy /activity setup trước.", ephemeral: true });
+      activityConfig[guildId].enabled = true;
+      saveActivityConfig();
+      return interaction.reply({ content: "📊 Log hoạt động **đã bật**.", ephemeral: true });
+    }
+
+    if (sub === "disable") {
+      activityConfig[guildId].enabled = false;
+      saveActivityConfig();
+      return interaction.reply({ content: "🛑 Log hoạt động **đã tắt**.", ephemeral: true });
+    }
+
+    return interaction.reply({ content: "📘 Dùng /activity setup|enable|disable.", ephemeral: true });
   }
 
-  // BOTCUTE
-  if (interaction.commandName === "botcute") {
-    const channel = interaction.options.getChannel("kenh");
-    setActiveCute(channel.id);
-    return interaction.reply(`💖 Meyia Cute sẽ trò chuyện trong kênh: ${channel}`);
+  // ----------- Các lệnh khác -----------
+  if (cmd === "ping") {
+    const sent = await interaction.reply({ content: "Pinging...", fetchReply: true });
+    const diff = sent.createdTimestamp - interaction.createdTimestamp;
+    return interaction.editReply(`🏓 Pong! Latency ${diff}ms. API ${Math.round(client.ws.ping)}ms`);
   }
 
-  // INFO
-  if (interaction.commandName === "info") {
-    const embed = new EmbedBuilder()
-      .setColor("#FFB6C1")
-      .setTitle("💫 Thông tin & Hướng dẫn sử dụng Meyia")
-      .setDescription(`
-**🌸 Meyia — Bot trợ lý & trò chuyện**  
-**Phiên bản:** 1.3.0  
-**Ngày phát triển:** 30/10/2025  
-**Nhà phát triển:** <@${OWNER_ID}>  
-
----  
-
-[...giữ nguyên nội dung help như trước...]
-`)
-      .setFooter({ text: "Meyia — người bạn nhỏ đáng yêu của bạn 💕" });
-    return interaction.reply({ embeds: [embed], ephemeral: true });
+  if (cmd === "xoachat") {
+    if (!isAdmin) return interaction.reply({ content: "❌ Không đủ quyền.", ephemeral: true });
+    const count = interaction.options.getInteger("count");
+    if (!count || count < 1 || count > 99) return interaction.reply({ content: "⚠️ Nhập 1–99.", ephemeral: true });
+    const del = await interaction.channel.bulkDelete(count, true);
+    return interaction.reply({ content: `🧹 Đã xoá ${del.size} tin.`, ephemeral: true });
   }
+
+  if (cmd === "8ball") return interaction.reply(["Có", "Không", "Có thể", "Hỏi lại sau"][Math.floor(Math.random() * 4)]);
+  if (cmd === "rps") return interaction.reply(["✊", "🖐️", "✌️"][Math.floor(Math.random() * 3)]);
+  if (cmd === "love") return interaction.reply(`💞 Hợp đôi: ${Math.floor(Math.random() * 101)}%`);
+  if (cmd === "hug" || cmd === "slap") {
+    const target = interaction.options.getUser("user");
+    const emoji = cmd === "hug" ? "🤗" : "🖐️";
+    if (!target) return interaction.reply(`${emoji} ${interaction.user.username} gửi một hành động!`);
+    return interaction.reply(`${emoji} ${interaction.user} -> ${target}`);
+  }
+  if (cmd === "say") return interaction.reply(interaction.options.getString("text"));
+  if (cmd === "quote") return interaction.reply(["Cuộc sống là hành trình.", "Cười lên nào!", "Bạn làm được!"][Math.floor(Math.random() * 3)]);
+  if (cmd === "mood") return interaction.reply(["😊 Vui", "😴 Mệt", "🥰 Hạnh phúc", "🤔 Nghĩ ngợi"][Math.floor(Math.random() * 4)]);
+  if (cmd === "info") return interaction.reply({ content: "💫 Meyia v1.3.0 — bot đáng yêu & trợ lý nhỏ 💕", ephemeral: true });
+  if (cmd === "birthday") return interaction.reply({ content: "🎂 Chức năng sinh nhật đang phát triển.", ephemeral: true });
 });
 
-// -------------------------
-// 🧠 XỬ LÝ TIN NHẮN (CHATBOT + BOTCUTE)
-// -------------------------
-client.on(Events.MessageCreate, async (message) => {
-  if (message.author.bot) return;
-
-  const args = message.content.trim().split(/\s+/);
-  const cmd = args.shift()?.toLowerCase();
-
-  if (cmd === "!shutdown" && message.author.id === OWNER_ID) {
-    await message.reply("💤 Meyia tắt đây... hẹn gặp lại sau nha~");
-    process.exit(0);
-  }
-  if (cmd === "!restart" && message.author.id === OWNER_ID) {
-    await message.reply("🔄 Meyia đang khởi động lại...");
-    process.exit(0);
-  }
-  if (cmd === "!mute") {
-    muteChannel(message.channel.id);
-    return message.reply("🔇 Meyia đã tạm ngưng chat trong kênh này!");
-  }
-  if (cmd === "!unmute") {
-    unmuteChannel(message.channel.id);
-    return message.reply("🔊 Đã gỡ mute cho kênh này!");
-  }
-  if (cmd === "!status") {
-    return message.reply(getStatusString());
-  }
-
-  if (mutedChannels.has(message.channel.id)) return;
-
-  pushChannelHistory(message.channel.id, {
-    id: message.id,
-    authorId: message.author.id,
-    content: message.content,
-    timestamp: Date.now()
-  });
-
-  const isChatChannel = activeChatChannel && message.channel.id === activeChatChannel;
-  const isCuteChannel = activeCuteChannel && message.channel.id === activeCuteChannel;
-
-  if (!isChatChannel && !isCuteChannel) return;
-
-  const lastResp = lastResponseTime.get(message.channel.id) || 0;
-  if (Date.now() - lastResp < ANTI_SPAM_MS) {
-    const prev = messagesSinceMention.get(message.channel.id) || 0;
-    messagesSinceMention.set(message.channel.id, prev + 1);
-    return;
-  }
-
-  const mentioned = containsBotName(message.content);
-  if (mentioned) {
-    messagesSinceMention.set(message.channel.id, 0);
-    passiveChecksDone.set(message.channel.id, 0);
-    lastPassiveCheckIndex.set(message.channel.id, 0);
-
-    const recent = getRecentMessages(message.channel.id, READ_ON_MENTION);
-    const messagesForOpenAI = buildOpenAIMessages(recent, isCuteChannel ? "cute" : "normal");
-
-    try {
-      await message.channel.sendTyping();
-
-      // chọn model: ưu tiên gpt-4o nếu có; nếu lỗi unauthorized -> fallback gpt-4o-mini
-      const modelToUse = process.env.PREFERRED_MODEL || "gpt-4o";
-
-      const response = await openai.chat.completions.create({
-        model: modelToUse,
-        messages: messagesForOpenAI,
-        temperature: isCuteChannel ? 0.95 : 0.85,
-        max_tokens: isCuteChannel ? 180 : 300
-      });
-
-      const replyText = response.choices?.[0]?.message?.content?.trim() || "Huhu... em chưa trả lời được, thử lại nha~";
-      await message.reply(replyText);
-      lastResponseTime.set(message.channel.id, Date.now());
-
-      pushChannelHistory(message.channel.id, {
-        id: `assistant-${Date.now()}`,
-        authorId: client.user.id,
-        content: replyText,
-        timestamp: Date.now()
-      });
-    } catch (err) {
-      // hiển thị lỗi chi tiết (nếu là response data thì in data)
-      console.error("Lỗi khi gọi OpenAI:", err.response?.data || err.message || err);
-      // nếu lỗi do model/unautorized, thử fallback
-      const errMsg = (err.response?.status) ? `${err.response.status} ${err.response.statusText}` : err.message;
-      if (errMsg && /401|Unauthorized|permission/i.test(String(errMsg))) {
-        // thông báo rõ ràng cho admin
-        await message.reply("🥺 Lỗi xác thực OpenAI (401). Kiểm tra OPENAI_API_KEY/OPENAI_PROJECT trong .env.");
-      } else if (/model|not found|invalid/i.test(String(errMsg))) {
-        // thử fallback model
-        try {
-          console.log("⚠️ Thử fallback sang gpt-4o-mini...");
-          const fallback = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
-            messages: buildOpenAIMessages(getRecentMessages(message.channel.id, READ_ON_MENTION), isCuteChannel ? "cute" : "normal"),
-            temperature: isCuteChannel ? 0.9 : 0.8,
-            max_tokens: isCuteChannel ? 120 : 200
-          });
-          const replyText = fallback.choices?.[0]?.message?.content?.trim() || "Em góp ý chút nè~";
-          await message.reply(replyText);
-          lastResponseTime.set(message.channel.id, Date.now());
-          pushChannelHistory(message.channel.id, {
-            id: `assistant-${Date.now()}`,
-            authorId: client.user.id,
-            content: replyText,
-            timestamp: Date.now()
-          });
-        } catch (err2) {
-          console.error("Fallback cũng lỗi:", err2.response?.data || err2.message || err2);
-          await message.reply("🥺 Em đang gặp lỗi kết nối với OpenAI. Người quản trị kiểm tra lại key và project nha.");
-          lastResponseTime.set(message.channel.id, Date.now());
-        }
-      } else {
-        await message.reply("🥺 Em bị lag xíu, nói lại cho Meyia nha~");
-        lastResponseTime.set(message.channel.id, Date.now());
-      }
-    }
-    return;
-  }
-
-  // passive checks
-  const prevCount = messagesSinceMention.get(message.channel.id) || 0;
-  const newCount = prevCount + 1;
-  messagesSinceMention.set(message.channel.id, newCount);
-
-  const lastIndex = lastPassiveCheckIndex.get(message.channel.id) || 0;
-  const currentIndex = Math.floor(newCount / PASSIVE_INTERVAL);
-  if (currentIndex > lastIndex) {
-    const tries = passiveChecksDone.get(message.channel.id) || 0;
-    if (tries >= PASSIVE_MAX_TRIES) {
-      lastPassiveCheckIndex.set(message.channel.id, currentIndex);
-      return;
-    }
-    passiveChecksDone.set(message.channel.id, tries + 1);
-    lastPassiveCheckIndex.set(message.channel.id, currentIndex);
-
-    const roll = Math.random();
-    if (roll <= 0.3) {
-      const recent = getRecentMessages(message.channel.id, READ_ON_MENTION);
-      const messagesForOpenAI = buildOpenAIMessages(recent, isCuteChannel ? "cute" : "normal", true);
-      try {
-        await message.channel.sendTyping();
-        const response = await openai.chat.completions.create({
-          model: process.env.PREFERRED_MODEL || "gpt-4o",
-          messages: messagesForOpenAI,
-          temperature: isCuteChannel ? 0.9 : 0.8,
-          max_tokens: isCuteChannel ? 120 : 200
-        });
-        const replyText = response.choices?.[0]?.message?.content?.trim() || "Em góp ý chút nè~";
-        await message.channel.send(replyText);
-        lastResponseTime.set(message.channel.id, Date.now());
-        pushChannelHistory(message.channel.id, {
-          id: `assistant-${Date.now()}`,
-          authorId: client.user.id,
-          content: replyText,
-          timestamp: Date.now()
-        });
-      } catch (err) {
-        console.error("Lỗi OpenAI passive read:", err.response?.data || err.message || err);
-      }
-    }
-  }
+// ----------- LOG ACTIVITY EVENTS -----------
+client.on(Events.GuildMemberAdd, m => logActivity(m.guild.id, `🟢 ${m.user.tag} vừa tham gia!`));
+client.on(Events.GuildMemberRemove, m => logActivity(m.guild.id, `🔴 ${m.user.tag} đã rời server.`));
+client.on(Events.MessageCreate, msg => {
+  if (!msg.guild || msg.author.bot) return;
+  logActivity(msg.guild.id, `💬 ${msg.author.tag}: ${msg.content}`);
 });
 
-// -------------------------
-// HÀM XÂY DỰNG PROMPT CHO OPENAI
-// -------------------------
-function buildOpenAIMessages(recentMessages, mode = "normal", passive = false) {
-  const systemBaseNormal = `
-Bạn là Meyia, một cô gái 18 tuổi thân thiện, tinh nghịch và dễ gần.
-Trả lời tự nhiên như một người bạn thật, sử dụng emoji phù hợp.
-Khi được gọi hãy trả lời đầy đủ, 2-6 câu, có thể hỏi lại để giữ cuộc trò chuyện.
-`;
-  const systemBaseCute = `
-Bạn là Meyia Cute — cực kỳ đáng yêu, nói chuyện như bé con, hay nhõng nhẽo và dùng emoji nhiều.
-Trả lời ngắn gọn, ngọt ngào, 1-3 câu, dùng emoji (🥺💖✨).
-`;
-
-  const system = mode === "cute" ? systemBaseCute : systemBaseNormal;
-
-  const msgs = [{ role: "system", content: system }];
-
-  for (const m of recentMessages) {
-    if (m.authorId === client.user.id) {
-      msgs.push({ role: "assistant", content: m.content });
-    } else {
-      msgs.push({ role: "user", content: m.content });
-    }
-  }
-
-  if (passive) {
-    msgs.push({ role: "system", content: "Lưu ý: Đây là phản hồi tự phát (không ai gọi tên bot). Hãy trả lời ngắn gọn, lịch sự, không gây phiền." });
-  }
-
-  return msgs;
-}
-
-// -------------------------
-// LOGIN
-// -------------------------
-client.login(process.env.TOKEN).catch(err => console.error("❌ Lỗi đăng nhập:", err.message));
+// ----------- LOGIN -----------
+const token = process.env.TOKEN || process.env.DISCORD_TOKEN;
+if (!token) console.error("❌ Thiếu TOKEN trong .env");
+else client.login(token);
