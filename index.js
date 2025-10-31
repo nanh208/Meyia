@@ -138,12 +138,7 @@ client.once(Events.ClientReady, async () => {
     { name: "info", description: "Thông tin bot" },
 
     // ---------- Music slash commands ----------
-    // /play nhận 2 tuỳ chọn: link (URL) và ten (tên bài/playlist). Không bắt buộc trên discord, kiểm tra trong handler (ít nhất 1 tuỳ chọn).
-    { name: "play", description: "Phát nhạc (link hoặc tên)", options: [
-      { name: "link", description: "URL bài/playlist (nếu có)", type: ApplicationCommandOptionType.String, required: false },
-      { name: "ten", description: "Tên bài/playlist (nếu không dùng link)", type: ApplicationCommandOptionType.String, required: false },
-      { name: "query", description: "Legacy: tên bài / link / playlist", type: ApplicationCommandOptionType.String, required: false }
-    ] },
+    { name: "play", description: "Phát nhạc (YouTube Music / YouTube)", options: [{ name: "query", description: "Tên bài / link / playlist", type: ApplicationCommandOptionType.String, required: true }] },
     { name: "stop", description: "Dừng nhạc và rời voice" },
     { name: "skip", description: "Bỏ qua bài đang phát" },
     { name: "pause", description: "Tạm dừng phát" },
@@ -257,49 +252,52 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 
   // ---------- MUSIC COMMANDS ----------
-  if (cmd === "play") {
-    const query = interaction.options.getString("query");
-    const memberVoice = interaction.member?.voice?.channel;
-    if (!memberVoice) return interaction.reply({ content: "❗ Bạn phải vào kênh thoại trước!", ephemeral: true });
+  // ---------- MUSIC COMMANDS ----------
+if (cmd === "play") {
+  const query = interaction.options.getString("query");
+  const memberVoice = interaction.member?.voice?.channel;
+  if (!memberVoice) return interaction.reply({ content: "❗ Bạn phải vào kênh thoại trước!", ephemeral: true });
 
-    await interaction.deferReply();
+  await interaction.deferReply();
+
+  try {
+    // Tìm track bằng link hoặc tên, không cần cookie
+    const search = await client.player.search(query, {
+      requestedBy: interaction.user,
+      searchEngine: QueryType.AUTO // AUTO tự chọn YT/YouTube Music
+    });
+
+    if (!search || !search.tracks.length) return interaction.editReply("❌ Không tìm thấy bài hát!");
+
+    const queue = await client.player.createQueue(interaction.guild, {
+      metadata: { channel: interaction.channel },
+      leaveOnEnd: true
+    });
 
     try {
-      // prefer QueryType.AUTO to allow play-dl to resolve YouTube Music / YT
-      const search = await client.player.search(query, {
-        requestedBy: interaction.user,
-        searchEngine: QueryType.AUTO
-      });
-
-      if (!search || !search.tracks.length) return interaction.editReply("❌ Không tìm thấy bài hát!");
-
-      const queue = await client.player.createQueue(interaction.guild, {
-        metadata: { channel: interaction.channel }
-      });
-
-      try {
-        if (!queue.connection) await queue.connect(memberVoice);
-      } catch (err) {
-        client.player.deleteQueue(interaction.guild.id);
-        return interaction.editReply("⚠️ Bot không thể vào voice (kiểm tra quyền Connect).");
-      }
-
-      // if playlist -> add all, else add first track
-      if (search.playlist) {
-        queue.addTracks(search.tracks);
-      } else {
-        queue.addTrack(search.tracks[0]);
-      }
-
-      if (!queue.playing) await queue.play();
-
-      const track = queue.current;
-      return interaction.editReply(`🎶 Đang phát: **${track.title}** — Yêu cầu bởi ${interaction.user}`);
-    } catch (err) {
-      console.error("Play command error:", err);
-      return interaction.editReply("❌ Lỗi khi phát nhạc.");
+      if (!queue.connection) await queue.connect(memberVoice);
+    } catch {
+      client.player.deleteQueue(interaction.guild.id);
+      return interaction.editReply("⚠️ Bot không thể vào voice (kiểm tra quyền).");
     }
+
+    // Nếu là playlist -> thêm tất cả, nếu track -> thêm track đầu
+    if (search.playlist) {
+      queue.addTracks(search.tracks);
+    } else {
+      queue.addTrack(search.tracks[0]);
+    }
+
+    if (!queue.playing) await queue.play();
+
+    const track = queue.current;
+    return interaction.editReply(`🎶 Đang phát: **${track.title}** — Yêu cầu bởi ${interaction.user}`);
+  } catch (err) {
+    console.error("Play command error:", err);
+    return interaction.editReply("❌ Lỗi khi phát nhạc.");
   }
+}
+
 
   if (cmd === "stop") {
     try {
@@ -571,18 +569,8 @@ client.on("messageCreate", async (message) => {
 ===================================================================== */
 
 const volumePath = path.join(__dirname, "config", "volume.json");
-// ensure config dir exists and create file if missing; safe-read JSON
-if (!fs.existsSync(path.dirname(volumePath))) fs.mkdirSync(path.dirname(volumePath), { recursive: true });
 if (!fs.existsSync(volumePath)) fs.writeFileSync(volumePath, "{}");
-let volumeConfig = {};
-try {
-  const raw = fs.readFileSync(volumePath, "utf8") || "{}";
-  volumeConfig = JSON.parse(raw);
-} catch (e) {
-  console.warn("⚠️ volume.json parse error, resetting to {}:", e);
-  volumeConfig = {};
-  fs.writeFileSync(volumePath, "{}");
-}
+let volumeConfig = JSON.parse(fs.readFileSync(volumePath, "utf8"));
 
 // Auto reconnect voice khi connection error
 client.player.on("connectionError", (queue, error) => {
@@ -642,6 +630,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     fs.writeFileSync(volumePath, JSON.stringify(volumeConfig, null, 2));
   }
 });
+
 // -------- LOGIN -------- //
 const token = process.env.TOKEN || process.env.DISCORD_TOKEN;
 if (!token) {

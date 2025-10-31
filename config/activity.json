@@ -1,8 +1,11 @@
-{  
-    "activities": [
+{
+  "activities": [
     {
       "type": "LISTENING",
       "name": "Music"
     }
-  ]
+  ],
+  "1418248952335302849": {
+    "enabled": true
+  }
 }
