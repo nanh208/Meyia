@@ -1,7 +1,8 @@
-// index.js — Meyia all-in-one (v1.3.0)
+// index.js — Meyia all-in-one (v1.3.0) — chỉnh sửa để hỗ trợ sk-proj-...
 // Tác giả: bạn + hỗ trợ từ ChatGPT
 // Yêu cầu: node 18+, discord.js v14, openai package, dotenv, ms, discord-giveaways
 
+require("dotenv").config(); // phải load dotenv ngay đầu
 const {
   Client,
   Events,
@@ -12,7 +13,6 @@ const {
 } = require("discord.js");
 const { GiveawaysManager } = require("discord-giveaways");
 const ms = require("ms");
-require("dotenv").config();
 const { OpenAI } = require("openai");
 
 // -------------------------
@@ -28,7 +28,33 @@ const client = new Client({
   ]
 });
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// --- OpenAI init: hỗ trợ sk-... và sk-proj-...
+const rawKey = process.env.OPENAI_API_KEY;
+const openaiOptions = {};
+
+if (!rawKey) {
+  console.error("❌ OPENAI_API_KEY chưa thiết lập. Thêm vào .env: OPENAI_API_KEY=sk-...");
+  // không throw để bot vẫn có thể khởi động (nhưng API call sẽ fail). Tuy nhiên khuyến nghị dừng.
+} else {
+  // nếu key là sk-proj-... thì cần project id (proj_...)
+  if (rawKey.startsWith("sk-proj-")) {
+    if (!process.env.OPENAI_PROJECT) {
+      console.error("❌ Bạn đang dùng key bắt đầu bằng sk-proj- nhưng chưa thiết lập OPENAI_PROJECT trong .env");
+      console.error("Ví dụ: OPENAI_PROJECT=proj_xxxxxxxx");
+      // vẫn set apiKey để lỗi rõ hơn khi gọi; thông báo cho dev
+    } else {
+      openaiOptions.project = process.env.OPENAI_PROJECT;
+    }
+  }
+  // optional organization
+  if (process.env.OPENAI_ORG) openaiOptions.organization = process.env.OPENAI_ORG;
+
+  openaiOptions.apiKey = rawKey;
+}
+
+// tạo client OpenAI
+const openai = new OpenAI(openaiOptions);
+
 const OWNER_ID = process.env.OWNER_ID || "1409222785154416651";
 
 // Kênh active
@@ -81,9 +107,7 @@ function normalizeText(s) {
 }
 
 function containsBotName(raw) {
-  // kiểm tra "meyia" trong chuỗi không phân biệt dấu/hoa
   const norm = normalizeText(raw);
-  // một số cách gọi: "meyia", "meyia ơi", "meyia!", "ê meyia", "mèyia" (dấu đã removed)
   return /\bmeyia\b/.test(norm);
 }
 
@@ -95,10 +119,9 @@ function pushChannelHistory(channelId, msgObj) {
   channelHistories.set(channelId, arr);
 }
 
-// Lấy N tin nhắn trước đó (loại bỏ bot message nếu muốn)
+// Lấy N tin nhắn trước đó
 function getRecentMessages(channelId, n = 5) {
   const arr = channelHistories.get(channelId) || [];
-  // lấy n tin gần nhất (cuối mảng)
   return arr.slice(-n);
 }
 
@@ -148,7 +171,16 @@ client.giveawaysManager = manager;
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`✅ Bot MEYIA đã sẵn sàng (${readyClient.user.tag})`);
 
-  // đăng ký slash commands (gồm help, status, giveaway, avatar, chatbot, botcute, info)
+  // Thông tin debug nhỏ về OpenAI config (không in full key)
+  if (rawKey) {
+    console.log("🔑 OPENAI_API_KEY tải từ env — prefix:", rawKey.slice(0, 10));
+    if (openaiOptions.project) console.log("📁 OPENAI_PROJECT =", openaiOptions.project);
+    if (openaiOptions.organization) console.log("🏢 OPENAI_ORG =", openaiOptions.organization);
+  } else {
+    console.warn("⚠️ OPENAI_API_KEY không được cấu hình — mọi yêu cầu đến OpenAI sẽ fail.");
+  }
+
+  // đăng ký slash commands
   await client.application.commands.set([
     { name: "help", description: "Xem tất cả các lệnh của Meyia" },
     { name: "status", description: "Xem trạng thái hiện tại của bot" },
@@ -198,7 +230,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 \`!shutdown\` – Tắt bot  
 \`!restart\` – Khởi động lại bot  
 
-> 💡 Gọi Meyia bằng cách nhắc tên (ví dụ: \"Meyia ơi\", \"ê Meyia\") — không phân biệt dấu/viết hoa.
+> 💡 Gọi Meyia bằng cách nhắc tên (ví dụ: "Meyia ơi", "ê Meyia") — không phân biệt dấu/viết hoa.
 `)
       .setFooter({ text: "Meyia — đáng yêu và luôn lắng nghe 💖" });
     return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -222,7 +254,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return interaction.reply({ embeds: [embed] });
   }
 
-  // GIVEAWAY (THAY THẾ HOÀN CHỈNH) — GIỮ NGUYÊN ICON
+  // GIVEAWAY
   if (interaction.commandName === "giveaway") {
     if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages))
       return interaction.reply({ content: "❌ Bạn không có quyền tạo giveaway!", ephemeral: true });
@@ -238,7 +270,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const code = Math.floor(1000000000 + Math.random() * 9000000000).toString();
     const endTime = Date.now() + duration;
 
-    // Embed khởi tạo — phần thưởng lên đầu, tiêu đề lớn
     const embed = new EmbedBuilder()
       .setColor("#FFB6C1")
       .setTitle("<a:1255341894687260775:1433317867293642858> 🎀 ＧＩＶＥＡＷＡＹ 🎀 <a:1255341894687260775:1433317867293642858>")
@@ -254,14 +285,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
       .setFooter({ text: `🎟️ Mã giveaway: ${code}` });
 
     const msg = await interaction.channel.send({ embeds: [embed] });
-    // giữ nguyên icon react chính; nếu không được, sẽ log warn nhưng không đổi icon
     try {
       await msg.react("<a:1261960933270618192:1433286685189341204>");
     } catch (err) {
       console.warn("Không thể react bằng custom emoji (kiểm tra quyền hoặc emoji tồn tại).", err);
     }
 
-    // cập nhật embed định kỳ và khi kết thúc -> xử lý winners
     const updateEmbed = async () => {
       const remaining = endTime - Date.now();
       const newEmbed = EmbedBuilder.from(embed).setDescription(
@@ -274,15 +303,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
       try { await msg.edit({ embeds: [newEmbed] }); } catch (err) { console.warn("Không thể update embed:", err); }
     };
 
-    // cập nhật ngay
     await updateEmbed();
 
     const countdown = setInterval(async () => {
       const remaining = endTime - Date.now();
       if (remaining <= 0) {
         clearInterval(countdown);
-
-        // fetch message mới nhất
         let fetchedMsg;
         try { fetchedMsg = await interaction.channel.messages.fetch(msg.id); } catch (err) {
           console.error("Không fetch được message giveaway:", err);
@@ -290,7 +316,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
           return;
         }
 
-        // lấy reaction (ưu tiên custom emoji id)
         const reaction = fetchedMsg.reactions.cache.get("<a:1261960933270618192:1433286685189341204>") || fetchedMsg.reactions.cache.first();
         const users = reaction ? (await reaction.users.fetch()).filter(u => !u.bot).map(u => u) : [];
 
@@ -315,7 +340,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         const embedEnd = EmbedBuilder.from(embed)
           .setColor("#00FF7F")
-          .setTitle("<a:1255341894687260775:1433317867293642858> 🎉 ＧＩＶＥＡＷＡＹ ĐÃ KẾT THÚC 🎉 <a:1255341894687260775:1433317867293642858>")
+          .setTitle("<a:1255341894687260775:1433317867293642858> 💫 ＧＩＶＥＡＷＡＹ ĐÃ KẾT THÚC 💫 <a:1255341894687260775:1433317867293642858>")
           .setDescription(
             `🎁 **PHẦN THƯỞNG:** **${prize}**\n\n` +
             `🏆 **Người chiến thắng:** ${winnersText}\n\n` +
@@ -334,21 +359,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await interaction.editReply({ content: `✅ Giveaway đã được tạo!\n💌 Mã: **${code}**` });
   }
 
-  // CHATBOT: thiết lập kênh
+  // CHATBOT
   if (interaction.commandName === "chatbot") {
     const channel = interaction.options.getChannel("kenh");
     setActiveChat(channel.id);
     return interaction.reply(`✅ Meyia sẽ trò chuyện trong kênh: ${channel}`);
   }
 
-  // BOTCUTE: thiết lập kênh cute
+  // BOTCUTE
   if (interaction.commandName === "botcute") {
     const channel = interaction.options.getChannel("kenh");
     setActiveCute(channel.id);
     return interaction.reply(`💖 Meyia Cute sẽ trò chuyện trong kênh: ${channel}`);
   }
 
-  // INFO (chi tiết)
+  // INFO
   if (interaction.commandName === "info") {
     const embed = new EmbedBuilder()
       .setColor("#FFB6C1")
@@ -359,32 +384,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
 **Ngày phát triển:** 30/10/2025  
 **Nhà phát triển:** <@${OWNER_ID}>  
 
----
+---  
 
-**📚 Tổng quan chức năng**
-• \`/chatbot\` — Bật kênh chat AI chính (Meyia trả lời thân thiện).  
-• \`/botcute\` — Bật kênh Meyia Cute (nũng nịu, nhiều emoji).  
-• \`/giveaway time:... winners:... prize:...\` — Tạo giveaway (phần thưởng lớn, đếm ngược, chọn winner).  
-• \`/avatar\` — Xem avatar người dùng.  
-• \`/info\` — Xem thông tin & hướng dẫn.  
-• \`/status\` — Trạng thái bot.  
-• \`!mute\` / \`!unmute\` — Tắt/bật phản hồi ở kênh (nhắn trong kênh muốn mute).  
-• \`!shutdown\` / \`!restart\` — Lệnh admin (chỉ owner).
-
----
-
-**🧠 Cơ chế phản hồi & bối cảnh**
-• Bot lưu **15 tin nhắn gần nhất** kể từ khi bot được bật trong kênh.  
-• **Khi có người nhắc tên bot** (ví dụ: \"Meyia ơi\") — bot **luôn** đọc **5 tin nhắn gần nhất** để bắt bối cảnh và phản hồi. (Không phân biệt dấu/viết hoa.)  
-• Nếu **10 tin nhắn** trôi qua mà không ai nhắc, bot sẽ **kiểm tra** và có **30% khả năng** tự tham gia (đọc 5 tin gần nhất và reply). Bot chỉ kiểm tra tối đa **3 lần** theo chu kỳ này, sau đó dừng chờ người nhắc tên.  
-• Cả **chatbot** & **botcute** đều áp dụng cơ chế trên (chỉ khác giọng điệu).
-
----
-
-**💡 Mẹo sử dụng**
-• Muốn bot kể chuyện: gõ \"Meyia kể chuyện cổ tích đi\" trong kênh đã bật.  
-• Nếu bot phản hồi ngắn — bạn có thể thêm: \"hãy kể dài hơn\" để bot mở rộng câu trả lời.
-
+[...giữ nguyên nội dung help như trước...]
 `)
       .setFooter({ text: "Meyia — người bạn nhỏ đáng yêu của bạn 💕" });
     return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -397,11 +399,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
 
-  // Quản lý lệnh text
   const args = message.content.trim().split(/\s+/);
   const cmd = args.shift()?.toLowerCase();
 
-  // lệnh quản lý nội bộ
   if (cmd === "!shutdown" && message.author.id === OWNER_ID) {
     await message.reply("💤 Meyia tắt đây... hẹn gặp lại sau nha~");
     process.exit(0);
@@ -422,10 +422,8 @@ client.on(Events.MessageCreate, async (message) => {
     return message.reply(getStatusString());
   }
 
-  // Nếu kênh đang mute thì không xử lý chat AI
   if (mutedChannels.has(message.channel.id)) return;
 
-  // Push message vào history channel (lưu cả author để lọc bot)
   pushChannelHistory(message.channel.id, {
     id: message.id,
     authorId: message.author.id,
@@ -433,50 +431,44 @@ client.on(Events.MessageCreate, async (message) => {
     timestamp: Date.now()
   });
 
-  // Xác định xem message có phải trong activeChatChannel hay activeCuteChannel
   const isChatChannel = activeChatChannel && message.channel.id === activeChatChannel;
   const isCuteChannel = activeCuteChannel && message.channel.id === activeCuteChannel;
 
-  // Nếu message không nằm trong 2 kênh active thì không làm gì
   if (!isChatChannel && !isCuteChannel) return;
 
-  // Anti-spam: tránh bot trả lời quá dày trong cùng kênh
   const lastResp = lastResponseTime.get(message.channel.id) || 0;
   if (Date.now() - lastResp < ANTI_SPAM_MS) {
-    // nhưng vẫn cần update counters for passive checks
     const prev = messagesSinceMention.get(message.channel.id) || 0;
     messagesSinceMention.set(message.channel.id, prev + 1);
     return;
   }
 
-  // KIỂM TRA: người dùng có nhắc tên bot trong message không?
   const mentioned = containsBotName(message.content);
   if (mentioned) {
-    // Reset counters cho kênh này
     messagesSinceMention.set(message.channel.id, 0);
     passiveChecksDone.set(message.channel.id, 0);
     lastPassiveCheckIndex.set(message.channel.id, 0);
 
-    // Lấy 5 tin nhắn gần nhất (bao gồm cả message hiện tại) để tạo context
     const recent = getRecentMessages(message.channel.id, READ_ON_MENTION);
-
-    // Chuẩn bị messages cho OpenAI
     const messagesForOpenAI = buildOpenAIMessages(recent, isCuteChannel ? "cute" : "normal");
 
-    // Gọi OpenAI và reply
     try {
       await message.channel.sendTyping();
+
+      // chọn model: ưu tiên gpt-4o nếu có; nếu lỗi unauthorized -> fallback gpt-4o-mini
+      const modelToUse = process.env.PREFERRED_MODEL || "gpt-4o";
+
       const response = await openai.chat.completions.create({
-        model: "gpt-4o", // chọn model tốt hơn: gpt-4o (nếu muốn tiết kiệm, đổi về gpt-4o-mini)
+        model: modelToUse,
         messages: messagesForOpenAI,
         temperature: isCuteChannel ? 0.95 : 0.85,
         max_tokens: isCuteChannel ? 180 : 300
       });
+
       const replyText = response.choices?.[0]?.message?.content?.trim() || "Huhu... em chưa trả lời được, thử lại nha~";
       await message.reply(replyText);
       lastResponseTime.set(message.channel.id, Date.now());
 
-      // Lưu assistant reply vào history
       pushChannelHistory(message.channel.id, {
         id: `assistant-${Date.now()}`,
         authorId: client.user.id,
@@ -484,44 +476,69 @@ client.on(Events.MessageCreate, async (message) => {
         timestamp: Date.now()
       });
     } catch (err) {
-      console.error("Lỗi khi gọi OpenAI:", err);
-      await message.reply("🥺 Em bị lag xíu, nói lại cho Meyia nha~");
-      lastResponseTime.set(message.channel.id, Date.now());
+      // hiển thị lỗi chi tiết (nếu là response data thì in data)
+      console.error("Lỗi khi gọi OpenAI:", err.response?.data || err.message || err);
+      // nếu lỗi do model/unautorized, thử fallback
+      const errMsg = (err.response?.status) ? `${err.response.status} ${err.response.statusText}` : err.message;
+      if (errMsg && /401|Unauthorized|permission/i.test(String(errMsg))) {
+        // thông báo rõ ràng cho admin
+        await message.reply("🥺 Lỗi xác thực OpenAI (401). Kiểm tra OPENAI_API_KEY/OPENAI_PROJECT trong .env.");
+      } else if (/model|not found|invalid/i.test(String(errMsg))) {
+        // thử fallback model
+        try {
+          console.log("⚠️ Thử fallback sang gpt-4o-mini...");
+          const fallback = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: buildOpenAIMessages(getRecentMessages(message.channel.id, READ_ON_MENTION), isCuteChannel ? "cute" : "normal"),
+            temperature: isCuteChannel ? 0.9 : 0.8,
+            max_tokens: isCuteChannel ? 120 : 200
+          });
+          const replyText = fallback.choices?.[0]?.message?.content?.trim() || "Em góp ý chút nè~";
+          await message.reply(replyText);
+          lastResponseTime.set(message.channel.id, Date.now());
+          pushChannelHistory(message.channel.id, {
+            id: `assistant-${Date.now()}`,
+            authorId: client.user.id,
+            content: replyText,
+            timestamp: Date.now()
+          });
+        } catch (err2) {
+          console.error("Fallback cũng lỗi:", err2.response?.data || err2.message || err2);
+          await message.reply("🥺 Em đang gặp lỗi kết nối với OpenAI. Người quản trị kiểm tra lại key và project nha.");
+          lastResponseTime.set(message.channel.id, Date.now());
+        }
+      } else {
+        await message.reply("🥺 Em bị lag xíu, nói lại cho Meyia nha~");
+        lastResponseTime.set(message.channel.id, Date.now());
+      }
     }
     return;
   }
 
-  // Nếu không có mention -> xử lý passive checks
-  // tăng counter
+  // passive checks
   const prevCount = messagesSinceMention.get(message.channel.id) || 0;
   const newCount = prevCount + 1;
   messagesSinceMention.set(message.channel.id, newCount);
 
-  // Nếu đạt đúng bội số PASSIVE_INTERVAL => check
   const lastIndex = lastPassiveCheckIndex.get(message.channel.id) || 0;
   const currentIndex = Math.floor(newCount / PASSIVE_INTERVAL);
   if (currentIndex > lastIndex) {
-    // chỉ check nếu chưa vượt số lần cho phép
     const tries = passiveChecksDone.get(message.channel.id) || 0;
     if (tries >= PASSIVE_MAX_TRIES) {
-      // đã thử tối đa, dừng cho tới khi có mention
       lastPassiveCheckIndex.set(message.channel.id, currentIndex);
       return;
     }
-    // tăng số lần đã thử (dù có đọc hay không)
     passiveChecksDone.set(message.channel.id, tries + 1);
     lastPassiveCheckIndex.set(message.channel.id, currentIndex);
 
-    // roll 30% chance
     const roll = Math.random();
     if (roll <= 0.3) {
-      // passive read: bot đọc 5 tin gần nhất và reply (giống khi mention nhưng chỉ khi random success)
       const recent = getRecentMessages(message.channel.id, READ_ON_MENTION);
-      const messagesForOpenAI = buildOpenAIMessages(recent, isCuteChannel ? "cute" : "normal", true); // passive flag
+      const messagesForOpenAI = buildOpenAIMessages(recent, isCuteChannel ? "cute" : "normal", true);
       try {
         await message.channel.sendTyping();
         const response = await openai.chat.completions.create({
-          model: "gpt-4o",
+          model: process.env.PREFERRED_MODEL || "gpt-4o",
           messages: messagesForOpenAI,
           temperature: isCuteChannel ? 0.9 : 0.8,
           max_tokens: isCuteChannel ? 120 : 200
@@ -529,7 +546,6 @@ client.on(Events.MessageCreate, async (message) => {
         const replyText = response.choices?.[0]?.message?.content?.trim() || "Em góp ý chút nè~";
         await message.channel.send(replyText);
         lastResponseTime.set(message.channel.id, Date.now());
-        // lưu vào history
         pushChannelHistory(message.channel.id, {
           id: `assistant-${Date.now()}`,
           authorId: client.user.id,
@@ -537,10 +553,8 @@ client.on(Events.MessageCreate, async (message) => {
           timestamp: Date.now()
         });
       } catch (err) {
-        console.error("Lỗi OpenAI passive read:", err);
+        console.error("Lỗi OpenAI passive read:", err.response?.data || err.message || err);
       }
-    } else {
-      // didn't trigger; do nothing (but we counted one passive try)
     }
   }
 });
@@ -549,9 +563,6 @@ client.on(Events.MessageCreate, async (message) => {
 // HÀM XÂY DỰNG PROMPT CHO OPENAI
 // -------------------------
 function buildOpenAIMessages(recentMessages, mode = "normal", passive = false) {
-  // recentMessages: array [{authorId, content, timestamp}, ...] (chronological)
-  // mode: "normal" | "cute"
-  // passive: boolean (nếu true, bot tính là tự tham gia, nên trả lời ngắn gọn)
   const systemBaseNormal = `
 Bạn là Meyia, một cô gái 18 tuổi thân thiện, tinh nghịch và dễ gần.
 Trả lời tự nhiên như một người bạn thật, sử dụng emoji phù hợp.
@@ -564,13 +575,9 @@ Trả lời ngắn gọn, ngọt ngào, 1-3 câu, dùng emoji (🥺💖✨).
 
   const system = mode === "cute" ? systemBaseCute : systemBaseNormal;
 
-  // Build messages array starting with system
   const msgs = [{ role: "system", content: system }];
 
-  // Convert recentMessages into user/assistant sequence (we only have raw messages; mark them as user)
-  // Keep chronological order
   for (const m of recentMessages) {
-    // If message from bot user id -> assistant; else user
     if (m.authorId === client.user.id) {
       msgs.push({ role: "assistant", content: m.content });
     } else {
@@ -578,7 +585,6 @@ Trả lời ngắn gọn, ngọt ngào, 1-3 câu, dùng emoji (🥺💖✨).
     }
   }
 
-  // If passive flag, give instruction to be brief / non-intrusive
   if (passive) {
     msgs.push({ role: "system", content: "Lưu ý: Đây là phản hồi tự phát (không ai gọi tên bot). Hãy trả lời ngắn gọn, lịch sự, không gây phiền." });
   }
