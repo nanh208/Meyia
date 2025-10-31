@@ -1,4 +1,4 @@
-// index.js — Meyia all-in-one (v1.4.0 Enhanced)
+// index.js — Meyia all-in-one (v1.5.0 Full Enhanced)
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
@@ -13,7 +13,7 @@ const {
 const { GiveawaysManager } = require("discord-giveaways");
 const ms = require("ms");
 
-// ----------- CONFIG ----------- //
+// -------- CONFIG -------- //
 const activityPath = path.join(__dirname, "config", "activity.json");
 if (!fs.existsSync(path.dirname(activityPath))) fs.mkdirSync(path.dirname(activityPath), { recursive: true });
 if (!fs.existsSync(activityPath)) fs.writeFileSync(activityPath, "{}");
@@ -28,7 +28,7 @@ function logActivity(guildId, msg) {
   if (ch) ch.send(msg).catch(() => {});
 }
 
-// ----------- CLIENT INIT ----------- //
+// -------- CLIENT INIT -------- //
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -39,29 +39,29 @@ const client = new Client({
   ]
 });
 
-// ----------- SETTINGS ----------- //
 const OWNER_ID = process.env.OWNER_ID || "1409222785154416651";
-let mutedChannels = new Set();
 const MAIN_COLOR = "#CA50DC";
+let mutedChannels = new Set();
 
 function hasAdminPermission(i) {
-  if (!i) return false;
-  if (i.member)
-    return i.member.permissions?.has(PermissionFlagsBits.Administrator) ||
-      i.user?.id === OWNER_ID ||
-      i.member.permissions?.has(PermissionFlagsBits.ManageGuild);
-  if (i.permissions)
-    return i.permissions.has(PermissionFlagsBits.Administrator) ||
-      i.user?.id === OWNER_ID ||
-      i.permissions.has(PermissionFlagsBits.ManageGuild);
-  return false;
+  return (
+    i?.member?.permissions?.has(PermissionFlagsBits.Administrator) ||
+    i?.user?.id === OWNER_ID ||
+    i?.member?.permissions?.has(PermissionFlagsBits.ManageGuild)
+  );
 }
 
 function getStatusString() {
-  return `📡 **Trạng thái bot:**\n🧠 Chat AI: 🔒 Tắt\n🔇 Kênh mute: ${mutedChannels.size ? Array.from(mutedChannels).map(id => `<#${id}>`).join(", ") : "Không"}`;
+  return `📡 **Trạng thái bot:**\n🧠 Chat AI: 🔒 Tắt\n🔇 Kênh mute: ${
+    mutedChannels.size
+      ? Array.from(mutedChannels)
+          .map(id => `<#${id}>`)
+          .join(", ")
+      : "Không"
+  }`;
 }
 
-// ----------- GIVEAWAY MANAGER ----------- //
+// -------- GIVEAWAY MANAGER -------- //
 const manager = new GiveawaysManager(client, {
   storage: "./giveaways.json",
   default: {
@@ -74,12 +74,12 @@ const manager = new GiveawaysManager(client, {
 });
 client.giveawaysManager = manager;
 
-// ----------- READY ----------- //
+// -------- READY -------- //
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Bot MEYIA đã sẵn sàng (${client.user.tag})`);
 
   await client.application.commands.set([
-    { name: "help", description: "Xem các lệnh của bot" },
+    { name: "help", description: "Xem danh sách lệnh của bot" },
     { name: "status", description: "Xem trạng thái bot" },
     {
       name: "giveaway",
@@ -116,23 +116,19 @@ client.once(Events.ClientReady, async () => {
   console.log("✅ Slash commands đã đăng ký.");
 });
 
-// ----------- INTERACTIONS ----------- //
+// -------- INTERACTIONS -------- //
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   const cmd = interaction.commandName;
+  const user = interaction.user;
+  const channel = interaction.channel;
 
-  // 🎁 GIVEAWAY (giữ nguyên form)
+  // -------- GIVEAWAY (giữ nguyên form) -------- //
   if (cmd === "giveaway") {
     const prize = interaction.options.getString("prize");
     const duration = ms(interaction.options.getString("time"));
     const winnerCount = interaction.options.getInteger("winners");
-    const host = interaction.user;
-    const channel = interaction.channel;
-
-    if (!prize || !duration || !winnerCount)
-      return interaction.reply({ content: "⚠️ Vui lòng nhập đủ thông tin giveaway!", ephemeral: true });
-    if (!duration)
-      return interaction.reply({ content: "⚠️ Thời gian không hợp lệ! (vd: 1m, 1h, 1d)", ephemeral: true });
+    if (!duration) return interaction.reply({ content: "⚠️ Thời gian không hợp lệ!", ephemeral: true });
 
     const endTime = Date.now() + duration;
     const giveawayId = Math.floor(Math.random() * 999999999);
@@ -143,11 +139,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       .setDescription(
         `🎁 **Phần thưởng:** ${prize}\n\n` +
         `<a:1255340646248616061:1433317989406605383> Nhấn emoji bên dưới để tham gia!\n\n` +
-        `👑 **Tổ chức bởi:** ${host}\n` +
+        `👑 **Tổ chức bởi:** ${user}\n` +
         `🏆 **Số lượng giải:** ${winnerCount}\n` +
         `⏰ **Kết thúc:** <t:${Math.floor(endTime / 1000)}:R>`
       )
-      .setThumbnail(host.displayAvatarURL({ dynamic: true }))
+      .setThumbnail(user.displayAvatarURL({ dynamic: true }))
       .setImage(interaction.client.user.displayAvatarURL({ dynamic: true, size: 512 }))
       .setFooter({ text: `📛 Mã giveaway: ${giveawayId}` });
 
@@ -156,52 +152,60 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     const participants = new Set();
     const collector = msg.createReactionCollector({
-      filter: (reaction, user) =>
-        reaction.emoji.identifier === "1261960933270618192:1433286685189341204" && !user.bot,
+      filter: (reaction, u) => reaction.emoji.identifier === "1261960933270618192:1433286685189341204" && !u.bot,
       time: duration
     });
 
-    collector.on("collect", (_, user) => participants.add(user.id));
-
+    collector.on("collect", (_, u) => participants.add(u.id));
     collector.on("end", async () => {
       let winners = [];
-      let winnerText;
-
       if (participants.size === 0) {
-        winnerText = "❌ Không có ai tham gia giveaway này!";
+        winners = [];
       } else {
-        const all = Array.from(participants);
-        for (let i = 0; i < winnerCount && all.length > 0; i++) {
-          const index = Math.floor(Math.random() * all.length);
-          winners.push(all.splice(index, 1)[0]);
+        const arr = Array.from(participants);
+        for (let i = 0; i < winnerCount && arr.length > 0; i++) {
+          const idx = Math.floor(Math.random() * arr.length);
+          winners.push(arr.splice(idx, 1)[0]);
         }
-        winnerText = `🏆 **Người chiến thắng:** ${winners.map(id => `<@${id}>`).join(", ")}`;
       }
 
       const endEmbed = new EmbedBuilder()
         .setColor(MAIN_COLOR)
         .setTitle(`<a:1255341894687260775:1433317867293642858> GIVEAWAY KẾT THÚC <a:1255340646248616061:1433317989406605383>`)
         .setDescription(
-          `🎁 **Phần thưởng:** ${prize}\n\n${winnerText}\n👑 **Người tổ chức:** ${host}\n📛 **Mã giveaway:** ${giveawayId}`
+          `🎁 **Phần thưởng:** ${prize}\n\n` +
+          `${winners.length ? `🏆 **Người chiến thắng:** ${winners.map(id => `<@${id}>`).join(", ")}` : "❌ Không có ai tham gia!"}\n\n` +
+          `👑 **Người tổ chức:** ${user}\n📛 **Mã giveaway:** ${giveawayId}`
         )
-        .setThumbnail(host.displayAvatarURL({ dynamic: true }))
+        .setThumbnail(user.displayAvatarURL({ dynamic: true }))
         .setImage(interaction.client.user.displayAvatarURL({ dynamic: true, size: 512 }));
 
       await msg.edit({ embeds: [endEmbed] });
-      if (winners.length > 0)
-        await channel.send(`🎊 Chúc mừng ${winners.map(id => `<@${id}>`).join(", ")} đã thắng **${prize}**!`);
+      if (winners.length > 0) channel.send(`🎊 Chúc mừng ${winners.map(id => `<@${id}>`).join(", ")} đã thắng **${prize}**!`);
     });
 
     return interaction.reply({ content: "✅ Giveaway đã được tạo thành công!", ephemeral: true });
   }
 
-  // --------- TIỆN ÍCH NÂNG CẤP ---------
-  if (cmd === "ping") {
-    const embed = new EmbedBuilder()
-      .setColor(MAIN_COLOR)
-      .setTitle("🏓 PING")
-      .setDescription(`Tốc độ phản hồi: **${client.ws.ping}ms** ⚡`);
-    return interaction.reply({ embeds: [embed] });
+  // -------- CÁC LỆNH TIỆN ÍCH & VUI -------- //
+  if (cmd === "ping") return interaction.reply(`🏓 Pong! Độ trễ: ${client.ws.ping}ms`);
+  if (cmd === "love") return interaction.reply(`💞 Mức độ hợp đôi: ${Math.floor(Math.random() * 101)}%`);
+  if (cmd === "rps") return interaction.reply(["✊", "🖐️", "✌️"][Math.floor(Math.random() * 3)]);
+  if (cmd === "8ball") return interaction.reply(["Có", "Không", "Có thể", "Hỏi lại sau nhé~"][Math.floor(Math.random() * 4)]);
+  if (cmd === "mood") return interaction.reply(["😊 Vui vẻ", "😴 Mệt mỏi", "🥰 Hạnh phúc", "🤔 Trầm tư"][Math.floor(Math.random() * 4)]);
+  if (cmd === "quote") return interaction.reply(["✨ Sống là phải vui!", "💫 Bạn làm được!", "🌸 Cứ tiến lên nào!"][Math.floor(Math.random() * 3)]);
+
+  if (cmd === "say") {
+    const text = interaction.options.getString("text");
+    return interaction.reply({ content: text });
+  }
+
+  if (cmd === "xoachat") {
+    if (!hasAdminPermission(interaction)) return interaction.reply({ content: "🚫 Bạn không có quyền dùng lệnh này!", ephemeral: true });
+    const count = interaction.options.getInteger("count");
+    if (count < 1 || count > 99) return interaction.reply({ content: "⚠️ Số lượng phải từ 1–99.", ephemeral: true });
+    await interaction.channel.bulkDelete(count, true);
+    return interaction.reply({ content: `🧹 Đã xóa ${count} tin nhắn!`, ephemeral: true });
   }
 
   if (cmd === "avatar") {
@@ -209,28 +213,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const embed = new EmbedBuilder()
       .setColor(MAIN_COLOR)
       .setTitle(`🖼 Avatar của ${user.username}`)
-      .setImage(user.displayAvatarURL({ size: 512, dynamic: true }))
-      .setFooter({ text: "💖 Meyia Bot" });
+      .setImage(user.displayAvatarURL({ dynamic: true, size: 512 }));
     return interaction.reply({ embeds: [embed] });
   }
 
   if (cmd === "info") {
     const embed = new EmbedBuilder()
       .setColor(MAIN_COLOR)
-      .setTitle("🌸 Meyia v1.4.0 — All-in-one bot")
-      .setDescription("Một cô trợ lý nhỏ xinh giúp bạn quản lý server và tạo không khí vui vẻ 💕")
+      .setTitle("🌸 Meyia v1.5.0 — All-in-one bot")
+      .setDescription("Một cô trợ lý nhỏ xinh giúp bạn quản lý server & mang lại niềm vui 💕")
       .addFields(
         { name: "👑 Người phát triển", value: `<@${OWNER_ID}>`, inline: true },
-        { name: "⚙️ Phiên bản", value: "v1.4.0", inline: true },
-        { name: "🩷 Framework", value: "discord.js v14" }
+        { name: "⚙️ Phiên bản", value: "v1.5.0", inline: true },
+        { name: "💫 Framework", value: "discord.js v14", inline: true }
       )
       .setThumbnail(client.user.displayAvatarURL())
-      .setFooter({ text: "💫 Meyia Bot © 2025" });
+      .setFooter({ text: "💖 Meyia Bot © 2025" });
     return interaction.reply({ embeds: [embed] });
   }
 });
 
-// ----------- LOGIN ----------- //
+// -------- LOGIN -------- //
 const token = process.env.TOKEN || process.env.DISCORD_TOKEN;
 if (!token) console.error("❌ Thiếu TOKEN trong .env");
 else client.login(token);
