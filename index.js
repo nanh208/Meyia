@@ -175,38 +175,84 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (cmd === "giveaway") {
     try {
       const prize = interaction.options.getString("prize");
-      const time = interaction.options.getString("time");
+      const duration = interaction.options.getInteger("duration"); // số nguyên (giây)
       const winnerCount = interaction.options.getInteger("winners");
+      const host = interaction.user;
+      const channel = interaction.channel;
 
-      if (!/^\d+[smhd]$/.test(time)) {
-        return interaction.reply({ content: "⚠️ Thời gian không hợp lệ! (ví dụ: 10m, 1h)", ephemeral: true });
+      if (!prize || !duration || !winnerCount) {
+        return interaction.reply({ content: "⚠️ Vui lòng nhập đủ thông tin giveaway!", ephemeral: true });
       }
 
-      const duration = ms(time);
-      if (!duration || duration < 1000) {
-        return interaction.reply({ content: "⚠️ Thời gian không hợp lệ! (ví dụ: 10m, 1h)", ephemeral: true });
-      }
+      const endTime = Date.now() + duration * 1000;
+      const giveawayId = Math.floor(Math.random() * 999999999);
 
-      const giveawayId = `giveaway_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+      const embed = new EmbedBuilder()
+        .setColor(0x00FF00)
+        .setTitle(`<a:1255341894687260775:1433317867293642858> G I V E A W A Y <a:1255341894687260775:1433317867293642858>`)
+        .setDescription(
+          `🎁 **PHẦN THƯỞNG:** ${prize}\n\n` +
+          `<a:1255340646248616061:1433317989406605383> Mọi người hãy bấm vào emoji dưới để tham gia nhé!\n\n` +
+          `👑 **Người tổ chức:** ${host}\n` +
+          `🏆 **Số lượng giải:** ${winnerCount}\n` +
+          `⏰ **Thời gian còn lại:** <t:${Math.floor(endTime / 1000)}:R>`
+        )
+        .setThumbnail(host.displayAvatarURL({ dynamic: true }))
+        .setImage(interaction.client.user.displayAvatarURL({ dynamic: true, size: 512 }))
+        .setFooter({ text: `📛 Mã giveaway: ${giveawayId}` });
 
-      const msg = await interaction.reply({ content: "🎉 Đang tạo giveaway...", fetchReply: true });
+      const msg = await channel.send({ embeds: [embed] });
 
-      try { await msg.react("🎉"); } catch {}
+      // react bằng custom animated emoji (giữ nguyên)
+      try { await msg.react("<a:1261960933270618192:1433286685189341204>"); } catch { /* ignore */ }
 
-      client.giveawaysManager.start(msg.channel, {
-        prize,
-        duration,
-        winnerCount,
-        filter: (reaction, user) => !user.bot && reaction.emoji.name === "🎉",
-        endedMessage: (guild, channel, message, winners) => {
-          const endEmbed = new EmbedBuilder()
-            .setColor(MAIN_COLOR)
-            .setTitle("🎉 GIVEAWAY KẾT THÚC")
-            .setDescription(`🎁 **Phần thưởng:** ${prize}\n\n${winners.length ? `🏆 **Người chiến thắng:** ${winners.map(id=>`<@${id}>`).join(", ")}` : "❌ Không có ai tham gia!"}\n\n👑 **Người tổ chức:** ${guild.members.cache.get(message.author.id)}`)
-            .setThumbnail(guild.members.cache.get(message.author.id).displayAvatarURL({ dynamic: true }))
-            .setImage(guild.me.displayAvatarURL({ dynamic: true, size: 512 }));
+      const participants = new Set();
 
-          msg.channel.send({ embeds: [endEmbed] }).catch(() => {});
+      const filter = (reaction, user) => {
+        if (user.bot) return false;
+        // chấp nhận custom emoji id hoặc fallback 🎉
+        return reaction.emoji.id === "1261960933270618192" || reaction.emoji.name === "🎉";
+      };
+
+      const collector = msg.createReactionCollector({ filter, time: duration * 1000 });
+
+      collector.on("collect", (_, user) => {
+        participants.add(user.id);
+      });
+
+      collector.on("end", async () => {
+        let winners = [];
+        let winnerText;
+
+        if (participants.size === 0) {
+          winnerText = "❌ Không có ai tham gia giveaway này!";
+        } else {
+          const all = Array.from(participants);
+          for (let i = 0; i < winnerCount && all.length > 0; i++) {
+            const index = Math.floor(Math.random() * all.length);
+            winners.push(all.splice(index, 1)[0]);
+          }
+          winnerText = `🏆 **Người chiến thắng:** ${winners.map(id => `<@${id}>`).join(", ")}`;
+        }
+
+        const endEmbed = new EmbedBuilder()
+          .setColor(0x00FF00)
+          .setTitle(`<a:1255341894687260775:1433317867293642858> G I V E A W A Y ĐÃ KẾT THÚC <a:12553406462486160061:1433317989406605383>`)
+          .setDescription(
+            `🎁 **PHẦN THƯỞNG:** ${prize}\n\n` +
+            `${winnerText}\n\n` +
+            `👑 **Người tổ chức:** ${host}\n\n` +
+            `📛 **Mã giveaway:** ${giveawayId}`
+          )
+          .setThumbnail(host.displayAvatarURL({ dynamic: true }))
+          .setImage(interaction.client.user.displayAvatarURL({ dynamic: true, size: 512 }));
+
+        try { await msg.edit({ embeds: [endEmbed] }); } catch {}
+
+        if (winners.length > 0) {
+          await channel.send(`🎊 Chúc mừng ${winners.map(id => `<@${id}>`).join(", ")} đã thắng **${prize}**!`);
+        } else {
+          await channel.send(`❌ Không có ai tham gia giveaway **${prize}**. Mã: **${giveawayId}**`);
         }
       });
 
