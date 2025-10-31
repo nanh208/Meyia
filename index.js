@@ -1,11 +1,11 @@
-// index.js — Meiya (Slash + SQLite) — NO MUSIC
+// index.js — Meiya (Slash + SQLite) — NO MUSIC (updated: help + giveaway + fun)
 require("dotenv").config();
 const { Client, GatewayIntentBits, Partials, Events, EmbedBuilder, PermissionsBitField, ApplicationCommandOptionType } = require("discord.js");
 const path = require("path");
 const fs = require("fs");
 const ms = require("ms");
 const Database = require("better-sqlite3");
-const fetch = require("node-fetch"); // optional for weather/translate if you add API keys
+const fetch = require("node-fetch");
 
 const MAIN_COLOR = "#FFB6C1";
 const OWNER_ID = process.env.OWNER_ID || "0";
@@ -40,7 +40,110 @@ db.prepare(`CREATE TABLE IF NOT EXISTS guild_config (
   logChannelId TEXT,
   autoRoleId TEXT
 )`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS giveaways (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT,
+  message_id TEXT,
+  prize TEXT,
+  winners INTEGER,
+  end_time INTEGER,
+  host_id TEXT,
+  ended INTEGER DEFAULT 0
+)`).run();
 
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName("giveaway")
+    .setDescription("🎁 Tạo một sự kiện giveaway mới")
+    .addStringOption(o => o.setName("phần_thưởng").setDescription("Phần thưởng là gì?").setRequired(true))
+    .addIntegerOption(o => o.setName("số_lượng_giải").setDescription("Số người thắng").setRequired(true))
+    .addStringOption(o => o.setName("thời_gian").setDescription("Thời gian (vd: 10m, 1h, 1d)").setRequired(true)),
+
+  async execute(interaction) {
+    try {
+      const prize = interaction.options.getString("phần_thưởng");
+      const numWinners = interaction.options.getInteger("số_lượng_giải");
+      const time = parseTime(interaction.options.getString("thời_gian"));
+      if (!time) return interaction.reply({ content: "❌ Thời gian không hợp lệ!", ephemeral: true });
+
+      const endTime = Date.now() + time;
+
+      const embed = new EmbedBuilder()
+        .setColor(MAIN_COLOR)
+        .setTitle("<a:1255341894687260775:1433317867293642858> **GIVEAWAY** <a:1255340646248616061:1433317989406605383>")
+        .setDescription(
+          `🎁 **Phần thưởng:** ${prize}\n` +
+          `<a:1255340646248616061:1433317989406605383> **Số lượng giải:** ${numWinners}\n` +
+          `⌛ **Thời gian:** ${interaction.options.getString("thời_gian")}\n` +
+          `👑 **Người tổ chức:** <@${interaction.user.id}>`
+        )
+        .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
+        .setFooter({ text: "Nhấn 🎉 để tham gia!", iconURL: interaction.client.user.displayAvatarURL() });
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("join_giveaway")
+          .setLabel("🎉 Tham Gia")
+          .setStyle(ButtonStyle.Success)
+      );
+
+      const msg = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
+
+      db.prepare("INSERT INTO giveaways (id, channel_id, message_id, prize, winners, end_time, host_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(msg.id, interaction.channel.id, msg.id, prize, numWinners, endTime, interaction.user.id);
+
+      scheduleGiveaway(interaction.client, msg, endTime, numWinners, prize, interaction);
+    } catch (err) {
+      console.error("Giveaway error:", err);
+      return interaction.reply({ content: "❌ Có lỗi xảy ra khi tạo giveaway.", ephemeral: true });
+    }
+  },
+};
+
+// === Hỗ trợ ===
+function parseTime(str) {
+  const m = /^(\d+)([smhd])$/.exec(str);
+  if (!m) return null;
+  const map = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
+  return parseInt(m[1]) * map[m[2]];
+}
+
+function scheduleGiveaway(client, msg, endTime, numWinners, prize, interaction) {
+  const giveawayId = msg.id;
+
+  const interval = setInterval(async () => {
+    if (Date.now() >= endTime) {
+      clearInterval(interval);
+      const data = db.prepare("SELECT * FROM giveaways WHERE id=? AND ended=0").get(giveawayId);
+      if (!data) return;
+
+      db.prepare("UPDATE giveaways SET ended=1 WHERE id=?").run(giveawayId);
+
+      const channel = await client.channels.fetch(data.channel_id);
+      const message = await channel.messages.fetch(data.message_id);
+      const reactions = await message.reactions.resolve("🎉")?.users.fetch() ?? new Map();
+      const participants = Array.from(reactions.keys()).filter(id => id !== client.user.id);
+
+      const winners = participants.sort(() => 0.5 - Math.random()).slice(0, numWinners);
+
+      const endEmbed = new EmbedBuilder()
+        .setColor(MAIN_COLOR)
+        .setTitle(`<a:1255341894687260775:1433317867293642858> GIVEAWAY KẾT THÚC <a:1255340646248616061:1433317989406605383>`)
+        .setDescription(
+          `🎁 **Phần thưởng:** ${prize}\n\n` +
+          `${winners.length ? `🏆 **Người chiến thắng:** ${winners.map(id => `<@${id}>`).join(", ")}` : "❌ Không có ai tham gia!"}\n\n` +
+          `👑 **Người tổ chức:** ${interaction.user}\n📛 **Mã giveaway:** ${giveawayId}`
+        )
+        .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
+        .setImage(interaction.client.user.displayAvatarURL({ dynamic: true, size: 512 }));
+
+      await message.edit({ embeds: [endEmbed], components: [] });
+
+      if (winners.length > 0)
+        channel.send(`🎊 Chúc mừng ${winners.map(id => `<@${id}>`).join(", ")} đã thắng **${prize}**!`);
+    }
+  }, 5000);
+}
 // helpers for db
 const insertWarning = db.prepare(`INSERT INTO warnings (guildId, userId, moderatorId, reason, timestamp) VALUES (?, ?, ?, ?, ?)`);
 const getWarnings = db.prepare(`SELECT * FROM warnings WHERE guildId = ? AND userId = ? ORDER BY id DESC`);
@@ -64,7 +167,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMessageReactions
   ],
-  partials: [Partials.Channel]
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction]
 });
 
 // utility
@@ -75,35 +178,32 @@ function isAdmin(member) {
 }
 
 function ensureMuteRole(guild) {
-  // create or return 'Meiya Muted' role
   const roleName = "Meiya Muted";
   let role = guild.roles.cache.find(r => r.name === roleName);
-  if (!role) {
-    // create role
-    role = guild.roles.create({ name: roleName, permissions: [] }).catch(() => null);
-  }
   return role;
 }
 
-// register commands list
+// register commands list (including giveaway + help + small fun commands)
 const commands = [
   // Moderation
   { name: "ban", description: "Ban member", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "reason", type: ApplicationCommandOptionType.String, required: false }] },
   { name: "kick", description: "Kick member", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "reason", type: ApplicationCommandOptionType.String, required: false }] },
   { name: "unban", description: "Unban by user ID", options: [{ name: "userid", type: ApplicationCommandOptionType.String, required: true }] },
   { name: "timeout", description: "Timeout (in minutes)", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "minutes", type: ApplicationCommandOptionType.Integer, required: true }, { name: "reason", type: ApplicationCommandOptionType.String, required: false }] },
-  { name: "clear", description: "Bulk delete messages", options: [{ name: "amount", type: ApplicationCommandOptionType.Integer, required: true }] },
-  { name: "lock", description: "Lock a channel" },
-  { name: "unlock", description: "Unlock a channel" },
-  { name: "mute", description: "Mute member (adds muted role)", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "minutes", type: ApplicationCommandOptionType.Integer, required: false }] },
+  { name: "clear", description: "Bulk delete messages (1-100)", options: [{ name: "amount", type: ApplicationCommandOptionType.Integer, required: true }] },
+  { name: "lock", description: "Lock the current channel" },
+  { name: "unlock", description: "Unlock the current channel" },
+  { name: "mute", description: "Mute member (role-based or timeout)", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "minutes", type: ApplicationCommandOptionType.Integer, required: false }] },
   { name: "unmute", description: "Unmute member", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }] },
-  // warn
-  { name: "warn", description: "Warn a user", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "reason", type: ApplicationCommandOptionType.String, required: true }] },
+
+  // Warn
+  { name: "warn", description: "Warn a user (saved)", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }, { name: "reason", type: ApplicationCommandOptionType.String, required: true }] },
   { name: "warnings", description: "List warnings for a user", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }] },
   { name: "clearwarn", description: "Clear warnings for a user", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: true }] },
   { name: "setlog", description: "Set mod log channel", options: [{ name: "channel", type: ApplicationCommandOptionType.Channel, required: true }] },
 
   // Utility/Info
+  { name: "help", description: "Show help and usage for commands" },
   { name: "serverinfo", description: "Show server info" },
   { name: "userinfo", description: "Show user info", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: false }] },
   { name: "avatar", description: "Show avatar", options: [{ name: "user", type: ApplicationCommandOptionType.User, required: false }] },
@@ -118,8 +218,20 @@ const commands = [
   { name: "remind", description: "Set a reminder (e.g. 10m, 2h, 1d)", options: [{ name: "time", type: ApplicationCommandOptionType.String, required: true }, { name: "text", type: ApplicationCommandOptionType.String, required: true }] },
   { name: "roleinfo", description: "Role details", options: [{ name: "role", type: ApplicationCommandOptionType.Role, required: true }] },
 
-  // fun
-  { name: "quote", description: "Random quote" }
+  // Fun + Misc
+  { name: "quote", description: "Random quote" },
+  { name: "coinflip", description: "Toss a coin" },
+  { name: "dice", description: "Roll a dice (1-6)" },
+  { name: "8ball", description: "Magic 8-ball answer", options: [{ name: "question", type: ApplicationCommandOptionType.String, required: true }] },
+  { name: "meme", description: "Random meme (reddit)" },
+
+  // Giveaway
+  { name: "giveaway", description: "Create a giveaway (time: 10m, 1h, 1d)", options: [{ name: "time", type: ApplicationCommandOptionType.String, required: true }, { name: "winners", type: ApplicationCommandOptionType.Integer, required: true }, { name: "prize", type: ApplicationCommandOptionType.String, required: true }] },
+
+  // DB/Stats
+  { name: "stats", description: "Show bot stats" },
+  { name: "dbstatus", description: "Show database file status" },
+  { name: "warnlog", description: "Show recent warn logs (server)", options: [] }
 ];
 
 // on ready
@@ -145,7 +257,6 @@ client.once(Events.ClientReady, async () => {
 function scheduleReminder(row) {
   const delay = row.remindAt - Date.now();
   if (delay <= 0) {
-    // due now
     deliverReminder(row).catch(console.error);
     return;
   }
@@ -156,12 +267,10 @@ function scheduleReminder(row) {
 
 async function deliverReminder(row) {
   try {
-    const guild = client.guilds.cache.get(row.guildId);
     const user = await client.users.fetch(row.userId).catch(() => null);
     if (user) {
       user.send(`🔔 Reminder: ${row.message}`).catch(() => {});
     }
-    // remove from db
     deleteReminder.run(row.id);
   } catch (e) {
     console.error("deliverReminder error:", e);
@@ -173,6 +282,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (!interaction.isChatInputCommand()) return;
     const cmd = interaction.commandName;
+
     // ---------- MODERATION ----------
     if (cmd === "ban") {
       if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
@@ -249,7 +359,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (cmd === "unlock") {
-      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚀 Đã mở khóa kênh.", ephemeral: true });
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: "🚫 Bạn không có quyền.", ephemeral: true });
       const ch = interaction.channel;
       await ch.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: null }).catch(e => { throw e; });
       interaction.reply({ content: `🔓 Đã mở khóa kênh ${ch}.` });
@@ -263,16 +373,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const minutes = interaction.options.getInteger("minutes") || 0;
       const member = interaction.guild.members.cache.get(user.id);
       if (!member) return interaction.reply({ content: "Người dùng không nằm trong server.", ephemeral: true });
-      // use timeout if available
+
       if (minutes > 0) {
         await member.timeout(minutes * 60 * 1000, `Muted by ${interaction.user.tag}`).catch(() => {});
         interaction.reply({ content: `🔇 Đã tạm mute ${user.tag} trong ${minutes} phút (timeout).` });
       } else {
-        // fallback: role-based mute
         let role = interaction.guild.roles.cache.find(r => r.name === "Meiya Muted");
         if (!role) {
           role = await interaction.guild.roles.create({ name: "Meiya Muted", permissions: [] });
-          // apply overwrites to all channels
           for (const ch of interaction.guild.channels.cache.values()) {
             try { await ch.permissionOverwrites.edit(role, { SendMessages: false, AddReactions: false, Speak: false }).catch(()=>{}); } catch {}
           }
@@ -289,7 +397,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const user = interaction.options.getUser("user");
       const member = interaction.guild.members.cache.get(user.id);
       if (!member) return interaction.reply({ content: "Người dùng không nằm trong server.", ephemeral: true });
-      // remove role if exists and try to clear timeout
       const role = interaction.guild.roles.cache.find(r => r.name === "Meiya Muted");
       if (role) { await member.roles.remove(role).catch(()=>{}); }
       await member.timeout(null).catch(()=>{});
@@ -400,7 +507,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (cmd === "say") {
       const text = interaction.options.getString("text");
       await interaction.reply({ content: "✅ Sent (ephemeral)", ephemeral: true });
-      // send to channel
       interaction.channel.send({ content: text }).catch(()=>{});
       return;
     }
@@ -443,32 +549,180 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.reply(quotes[Math.floor(Math.random()*quotes.length)]);
     }
 
+    // FUN small
+    if (cmd === "coinflip") {
+      return interaction.reply(Math.random() < 0.5 ? "🪙 Heads" : "🪙 Tails");
+    }
+    if (cmd === "dice") {
+      return interaction.reply(`🎲 Bạn lắc được: ${Math.floor(Math.random()*6)+1}`);
+    }
+    if (cmd === "8ball") {
+      const answers = ["Có", "Không", "Có thể", "Hỏi lại sau", "Chắc chắn có", "Rất ít khả năng"];
+      return interaction.reply(answers[Math.floor(Math.random()*answers.length)]);
+    }
+    if (cmd === "meme") {
+      try {
+        const res = await fetch("https://www.reddit.com/r/memes/hot.json?limit=50").then(r=>r.json());
+        const posts = res.data.children.filter(p => !p.data.over_18 && p.data.post_hint === "image");
+        if (!posts.length) return interaction.reply("Không tìm thấy meme.");
+        const pick = posts[Math.floor(Math.random()*posts.length)].data;
+        const embed = new EmbedBuilder().setTitle(pick.title).setImage(pick.url).setColor(MAIN_COLOR).setFooter({ text: `r/${pick.subreddit}`});
+        return interaction.reply({ embeds: [embed] });
+      } catch (e) {
+        return interaction.reply("❌ Lỗi khi lấy meme.");
+      }
+    }
+
     // REMINDERS
     if (cmd === "remind") {
       const timeStr = interaction.options.getString("time");
       const text = interaction.options.getString("text");
-      // parse simple format like 10m 2h 1d
       let msTime = 0;
-      try {
-        msTime = ms(timeStr); // using ms package
-      } catch { msTime = 0; }
+      try { msTime = ms(timeStr); } catch { msTime = 0; }
       if (!msTime) return interaction.reply({ content: "⏳ Không hiểu thời gian (ví dụ: 10m, 2h, 1d).", ephemeral: true });
       const remindAt = Date.now() + msTime;
       const createdAt = Date.now();
       const info = insertReminder.run(interaction.guild.id, interaction.user.id, remindAt, text, createdAt);
       const id = info.lastInsertRowid;
-      // schedule
       scheduleReminder({ id, guildId: interaction.guild.id, userId: interaction.user.id, remindAt, message: text, createdAt });
       interaction.reply({ content: `🔔 Reminder đã đặt cho <t:${Math.floor(remindAt/1000)}:F>`, ephemeral: true });
       return;
     }
 
-    // unknown fallback
+    // STATS / DB
+    if (cmd === "stats") {
+      const rows = db.prepare("SELECT COUNT(*) as c FROM warnings").get();
+      const reminders = db.prepare("SELECT COUNT(*) as c FROM reminders").get();
+      return interaction.reply({ content: `📊 Warnings: ${rows.c} — Reminders: ${reminders.c}` });
+    }
+    if (cmd === "dbstatus") {
+      try {
+        const stats = fs.statSync(dbPath);
+        return interaction.reply({ content: `DB: ${dbPath}\nSize: ${Math.round(stats.size/1024)} KB\nModified: ${stats.mtime}` });
+      } catch (e) {
+        return interaction.reply({ content: `Không thể đọc DB: ${e.message}`, ephemeral: true });
+      }
+    }
+    if (cmd === "warnlog") {
+      const rows = getAllWarnings.all(interaction.guild.id);
+      if (!rows || !rows.length) return interaction.reply({ content: "Không có logs cảnh cáo.", ephemeral: true });
+      const desc = rows.slice(0,20).map(r => `• [${new Date(r.timestamp).toLocaleString()}] <@${r.userId}> — ${r.reason} (by <@${r.moderatorId}>)`).join("\n");
+      const em = new EmbedBuilder().setTitle("Recent warnings").setDescription(desc).setColor(MAIN_COLOR);
+      return interaction.reply({ embeds: [em] });
+    }
+
+    // HELP (detailed)
+    module.exports = {
+  data: new SlashCommandBuilder()
+    .setName("help")
+    .setDescription("📚 Hiển thị danh sách các lệnh và công dụng chi tiết")
+    .addStringOption(option =>
+      option
+        .setName("category")
+        .setDescription("Chọn nhóm lệnh để xem chi tiết")
+        .addChoices(
+          { name: "🎛️ Moderation", value: "moderation" },
+          { name: "🔧 Utility", value: "utility" },
+          { name: "🎁 Giveaway", value: "giveaway" },
+          { name: "💰 Economy", value: "economy" },
+          { name: "🎶 Music", value: "music" },
+          { name: "😄 Fun", value: "fun" },
+          { name: "⚙️ System", value: "system" },
+          { name: "👑 Owner", value: "owner" },
+          { name: "Tất cả", value: "all" }
+        )
+    ),
+
+  async execute(interaction) {
+    const cat = interaction.options.getString("category") || "all";
+
+    const commands = {
+      moderation: [
+        "`/ban` – Cấm người dùng khỏi server.",
+        "`/kick` – Đuổi người dùng khỏi server.",
+        "`/mute` – Cấm nói tạm thời.",
+        "`/unmute` – Gỡ mute người dùng.",
+        "`/clear` – Xóa tin nhắn hàng loạt.",
+      ],
+      utility: [
+        "`/userinfo` – Xem thông tin người dùng.",
+        "`/serverinfo` – Xem thông tin server.",
+        "`/ping` – Kiểm tra độ trễ của bot.",
+        "`/avatar` – Lấy ảnh đại diện người dùng.",
+        "`/roleinfo` – Xem thông tin role.",
+      ],
+      giveaway: [
+        "`/giveaway` – Tạo event giveaway phần thưởng.",
+        "`/reroll` – Chọn lại người thắng.",
+        "`/endgiveaway` – Kết thúc giveaway thủ công.",
+      ],
+      economy: [
+        "`/balance` – Kiểm tra số dư.",
+        "`/give` – Chuyển tiền cho người khác.",
+        "`/daily` – Nhận phần thưởng hằng ngày.",
+        "`/shop` – Mở cửa hàng vật phẩm.",
+        "`/buy` – Mua vật phẩm.",
+      ],
+      music: [
+        "`/play` – Phát nhạc từ YouTube/Spotify.",
+        "`/pause` – Tạm dừng nhạc.",
+        "`/resume` – Tiếp tục phát.",
+        "`/skip` – Bỏ qua bài hát.",
+        "`/queue` – Xem danh sách phát.",
+        "`/stop` – Dừng nhạc và rời kênh.",
+      ],
+      fun: [
+        "`/meme` – Gửi meme ngẫu nhiên.",
+        "`/8ball` – Trả lời câu hỏi có/không vui nhộn.",
+        "`/say` – Bot nói lại nội dung bạn nhập.",
+        "`/love` – Tính % tình yêu giữa 2 người.",
+      ],
+      system: [
+        "`/botinfo` – Thông tin về bot.",
+        "`/uptime` – Thời gian hoạt động bot.",
+        "`/stats` – Thống kê server.",
+      ],
+      owner: [
+        "`/eval` – Thực thi code (chủ bot).",
+        "`/reload` – Tải lại lệnh mà không restart.",
+        "`/shutdown` – Tắt bot.",
+      ]
+    };
+
+    const embed = new EmbedBuilder()
+      .setColor("#ff9fd9")
+      .setTitle("🌸 Danh Sách Lệnh Meiya")
+      .setThumbnail(interaction.client.user.displayAvatarURL())
+      .setDescription("Sử dụng `/help [category]` để xem theo nhóm hoặc `/help` để xem tất cả.")
+      .setFooter({ text: "Meiya • Hệ thống trợ lý Discord thông minh 💖" });
+
+    if (cat === "all") {
+      for (const [category, list] of Object.entries(commands)) {
+        embed.addFields({ name: `💫 ${category.toUpperCase()}`, value: list.join("\n"), inline: false });
+      }
+    } else {
+      embed.addFields({ name: `💫 ${cat.toUpperCase()}`, value: commands[cat].join("\n") });
+    }
+
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+  },
+};
+
+    // fallback for any unhandled but registered commands
+    const registeredNames = commands.map(c => c.name);
+    if (registeredNames.includes(cmd)) {
+      return interaction.reply({ content: "❓ Lệnh đã đăng ký nhưng chưa triển khai logic chi tiết. Mình sẽ thêm nếu bạn muốn.", ephemeral: true });
+    }
+
+    // default fallback
     return interaction.reply({ content: "❓ Lệnh chưa được triển khai.", ephemeral: true });
 
   } catch (err) {
     console.error("interaction error:", err);
-    try { if (interaction.replied || interaction.deferred) interaction.followUp({ content: "❌ Lỗi khi chạy lệnh.", ephemeral: true }); else interaction.reply({ content: "❌ Lỗi khi chạy lệnh.", ephemeral: true }); } catch {}
+    try {
+      if (interaction.replied || interaction.deferred) interaction.followUp({ content: "❌ Lỗi khi chạy lệnh.", ephemeral: true });
+      else interaction.reply({ content: "❌ Lỗi khi chạy lệnh.", ephemeral: true });
+    } catch {}
   }
 });
 
@@ -484,7 +738,23 @@ function logToChannel(guildId, text) {
     ch.send({ content: text }).catch(()=>{});
   } catch (e) { console.warn("logToChannel error:", e); }
 }
-
+client.once("ready", async () => {
+  console.log(`✅ Bot ${client.user.username} đã hoạt động!`);
+  const data = db.prepare("SELECT * FROM giveaways WHERE ended=0").all();
+  for (const g of data) {
+    try {
+      const channel = await client.channels.fetch(g.channel_id);
+      const msg = await channel.messages.fetch(g.message_id);
+      scheduleGiveaway(client, msg, g.end_time, g.winners, g.prize, { user: { id: g.host_id } });
+    } catch (e) {
+      console.warn("Không thể khôi phục giveaway:", g.id);
+    }
+  }
+});
+client.once("ready", () => {
+  console.log(`✅ ${client.user.tag} đã online!`);
+  giveaway.restoreGiveaways(client);
+});
 // login
 const token = process.env.TOKEN;
 if (!token) {
