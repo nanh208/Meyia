@@ -464,13 +464,75 @@ client.on(Events.InteractionCreate, async (interaction) => {
   // Unknown command fallback
   return interaction.reply({ content: "❓ Lệnh chưa được triển khai.", ephemeral: true });
 });
+// ---------- MESSAGE PREFIX COMMANDS (UNIFIED, fixed duplicate) ----------
+client.on("messageCreate", async (message) => {
+    if (message.author.bot) return;
+    const prefix = "!";
+    if (!message.content.startsWith(prefix)) return;
+
+    const args = message.content.slice(prefix.length).trim().split(/ +/);
+    const cmd = args.shift().toLowerCase();
+    const memberVoice = message.member?.voice?.channel;
+
+    // !play auto
+    if (cmd === "play" && args[0] === "auto") {
+      if (!memberVoice) return message.reply("❗ Bạn phải vào kênh thoại trước!");
+
+      const queue = await client.player.createQueue(message.guild, {
+        metadata: { channel: message.channel },
+        leaveOnEnd: true,
+        leaveOnStop: true,
+        leaveOnEmpty: true
+      });
+
+      try {
+        if (!queue.connection) await queue.connect(memberVoice);
+      } catch {
+        try { client.player.deleteQueue(message.guild.id); } catch {}
+        return message.reply("⚠️ Bot không thể vào voice.");
+      }
+
+      const keywords = ["pop", "anime", "gaming", "chill", "lofi", "remix"];
+      const randomKeyword = keywords[Math.floor(Math.random() * keywords.length)];
+
+      const search = await client.player.search(randomKeyword, {
+        requestedBy: message.author,
+        searchEngine: QueryType.AUTO
+      });
+
+      if (!search || !search.tracks.length) return message.reply("❌ Không tìm thấy bài hát ngẫu nhiên!");
+
+      const track = search.tracks[Math.floor(Math.random() * search.tracks.length)];
+      queue.addTrack(track);
+
+      if (!queue.playing) await queue.play();
+
+      return message.reply(`🎶 Đang phát bài ngẫu nhiên: **${track.title}**`);
+    }
+
+    // !leave
+    if (cmd === "leave") {
+      const queue = client.player.getQueue(message.guild.id);
+      if (!queue) return message.reply("❌ Không có bài nào đang phát!");
+      queue.destroy();
+      return message.reply("⛔ Đã dừng nhạc và rời voice.");
+    }
+
+    // !skipto <số>
+    if (cmd === "skipto") {
+      const queue = client.player.getQueue(message.guild.id);
+      if (!queue || !queue.playing) return message.reply("❌ Không có bài nào đang phát!");
+      const num = parseInt(args[0]);
+      if (isNaN(num) || num < 1 || num > queue.tracks.length) return message.reply("⚠️ Nhập số hợp lệ trong queue!");
+      queue.skipTo(num - 1);
+      return message.reply(`⏭️ Bỏ qua đến bài số **${num}**: ${queue.current?.title || "?"}`);
+    }
+});
+// ...existing code...
+
 // ---------- MESSAGE PREFIX COMMANDS ---------- //
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-
-// =================== PREFIX COMMANDS ===================
-client.on("messageCreate", async (message)=>{
-  if(message.author.bot) return;
   const prefix = "!";
   if (!message.content.startsWith(prefix)) return;
   if(!message.content.startsWith(prefix)) return;
@@ -495,7 +557,7 @@ client.on("messageCreate", async (message)=>{
     try {
       if (!queue.connection) await queue.connect(memberVoice);
     } catch {
-      client.player.deleteQueue(message.guild.id);
+      try { client.player.deleteQueue(message.guild.id); } catch {}
       return message.reply("⚠️ Bot không thể vào voice.");
     }
 
@@ -623,10 +685,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // -------- LOGIN (fixed duplicates) -------- //
 const token = process.env.TOKEN || process.env.DISCORD_TOKEN;
 if (!token) {
-  console.error("❌ Thiếu TOKEN trong .env");
-  process.exit(1);
+    console.error("❌ Thiếu TOKEN trong .env");
+    process.exit(1);
 }
 client.login(token).catch(err => {
-  console.error("Login error:", err);
-  process.exit(1);
+    console.error("Login error:", err);
+    process.exit(1);
+});
 });
