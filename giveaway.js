@@ -1,56 +1,131 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+// index.js — Meyia v2.1 — All-In-One Discord Bot 💖
+// --------------------------------------------------
+require("dotenv").config();
+const fs = require("fs");
+const path = require("path");
+const {
+  Client,
+  Collection,
+  GatewayIntentBits,
+  Partials,
+  EmbedBuilder,
+  Events
+} = require("discord.js");
+const { GiveawaysManager } = require("discord-giveaways");
+const Database = require("better-sqlite3");
 const ms = require("ms");
 
-function parseTime(str) {
-  try { return ms(str); } catch { return null; }
+// ======================
+// 🔧 CẤU HÌNH CLIENT
+// ======================
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates
+  ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction]
+});
+
+client.commands = new Collection();
+
+// ======================
+// 📂 TẢI LỆNH TỰ ĐỘNG
+// ======================
+const foldersPath = path.join(__dirname, "commands");
+if (!fs.existsSync(foldersPath)) fs.mkdirSync(foldersPath);
+
+const commandFolders = fs.readdirSync(foldersPath);
+
+for (const folder of commandFolders) {
+  const commandsPath = path.join(foldersPath, folder);
+  const commandFiles = fs
+    .readdirSync(commandsPath)
+    .filter((file) => file.endsWith(".js"));
+
+  for (const file of commandFiles) {
+    const filePath = path.join(commandsPath, file);
+    const command = require(filePath);
+    if ("data" in command && "execute" in command) {
+      client.commands.set(command.data.name, command);
+      console.log(`✅ Đã tải lệnh: ${folder}/${command.data.name}`);
+    } else {
+      console.warn(`⚠️ Bỏ qua ${filePath} (thiếu data/execute)`);
+    }
+  }
 }
 
-module.exports = {
-  data: new SlashCommandBuilder()
-    .setName("giveaway")
-    .setDescription("🎁 Tạo một sự kiện giveaway mới")
-    .addStringOption(o => o.setName("phần_thưởng").setDescription("Phần thưởng là gì?").setRequired(true))
-    .addIntegerOption(o => o.setName("số_lượng_giải").setDescription("Số người thắng").setRequired(true))
-    .addStringOption(o => o.setName("thời_gian").setDescription("Thời gian (vd: 10m, 1h, 1d)").setRequired(true)),
+// ======================
+// 🎁 GIVEAWAY MANAGER
+// ======================
+const dbPath = path.join(__dirname, "giveaways.db");
+if (!fs.existsSync(path.join(__dirname, "database"))) fs.mkdirSync(path.join(__dirname, "database"));
 
-  async execute(interaction, client) {
-    try {
-      const prize = interaction.options.getString("phần_thưởng");
-      const numWinners = interaction.options.getInteger("số_lượng_giải");
-      const time = parseTime(interaction.options.getString("thời_gian"));
-      if (!time) return interaction.reply({ content: "❌ Thời gian không hợp lệ!", ephemeral: true });
+const giveawayDB = new Database(dbPath);
+client.giveawaysManager = new GiveawaysManager(client, {
+  storage: dbPath,
+  default: {
+    botsCanWin: false,
+    embedColor: "#FF66CC",
+    reaction: "🎉"
+  }
+});
 
-      const endTime = Date.now() + time;
+// ======================
+// 🤖 SỰ KIỆN: BOT SẴN SÀNG
+// ======================
+client.once(Events.ClientReady, (c) => {
+  console.log(`✨ Đăng nhập thành công với tên: ${c.user.tag}`);
+  c.user.setPresence({
+    activities: [{ name: `/help • by Meyia 💖`, type: 0 }],
+    status: "online"
+  });
+});
 
-      const embed = new EmbedBuilder()
-        .setColor(client.MAIN_COLOR)
-        .setTitle("<a:1255341894687260775:1433317867293642858> **GIVEAWAY** <a:1255340646248616061:1433317989406605383>")
-        .setDescription(
-          `🎁 **Phần thưởng:** ${prize}\n` +
-          `<a:1255340646248616061:1433317989406605383> **Số lượng giải:** ${numWinners}\n` +
-          `⌛ **Thời gian:** ${interaction.options.getString("thời_gian")}\n` +
-          `👑 **Người tổ chức:** <@${interaction.user.id}>`
-        )
-        .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
-        .setFooter({ text: "Nhấn 🎉 để tham gia!", iconURL: interaction.client.user.displayAvatarURL() });
+// ======================
+// ⚙️ XỬ LÝ LỆNH / INTERACTION
+// ======================
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("join_giveaway")
-          .setLabel("🎉 Tham Gia")
-          .setStyle(ButtonStyle.Success)
-      );
+  const command = client.commands.get(interaction.commandName);
+  if (!command) {
+    console.log(`⚠️ Không tìm thấy lệnh: ${interaction.commandName}`);
+    return;
+  }
 
-      const msg = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
-
-      client.db.prepare(`INSERT INTO giveaways (id, channel_id, message_id, prize, winners, end_time, host_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .run(msg.id, interaction.channel.id, msg.id, prize, numWinners, endTime, interaction.user.id);
-
-      client.scheduleGiveaway(client, msg, endTime, numWinners, prize, interaction);
-    } catch (err) {
-      console.error("Giveaway error:", err);
-      return interaction.reply({ content: "❌ Có lỗi xảy ra khi tạo giveaway.", ephemeral: true });
+  try {
+    await command.execute(interaction, client);
+    console.log(`📘 ${interaction.user.tag} đã dùng /${interaction.commandName}`);
+  } catch (error) {
+    console.error(`❌ Lỗi khi thực thi /${interaction.commandName}:`, error);
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({
+        content: "❌ Đã xảy ra lỗi khi chạy lệnh này!",
+        ephemeral: true
+      });
+    } else {
+      await interaction.reply({
+        content: "❌ Đã xảy ra lỗi khi chạy lệnh này!",
+        ephemeral: true
+      });
     }
-  },
-};
+  }
+});
+
+// ======================
+// 📜 GHI LOG LỖI TOÀN CỤC
+// ======================
+process.on("unhandledRejection", (error) => {
+  console.error("🚨 Lỗi không bắt được:", error);
+});
+process.on("uncaughtException", (error) => {
+  console.error("🔥 Lỗi không xử lý:", error);
+});
+
+// ======================
+// 🚀 ĐĂNG NHẬP BOT
+// ======================
+client.login(process.env.TOKEN);
