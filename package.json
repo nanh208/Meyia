@@ -6,11 +6,11 @@
   "license": "MIT",
   "main": "index.js",
   "type": "commonjs",
-  "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
-    "deploy": "node deploy-commands.js"
-  },
+"scripts": {
+  "deploy": "node deploy.js",
+  "deploy:test": "set GUILD_ID=YOUR_TEST_SERVER_ID && node deploy.js"
+}
+,
   "keywords": [
     "discord",
     "bot",
