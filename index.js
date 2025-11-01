@@ -1,104 +1,80 @@
-// index.js — Meyia All-in-One Bot (Full Stable Modular Version)
-// =============================================================
-// ⚙️ Vai trò: Khởi tạo bot, load lệnh, sự kiện, DB, AI, và logging.
-// -------------------------------------------------------------
-
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
-const { 
-  Client, 
-  GatewayIntentBits, 
-  Partials, 
-  Collection, 
-  Events 
-} = require("discord.js");
+const { Client, GatewayIntentBits, Collection, EmbedBuilder } = require("discord.js");
 
-const { loadCommands } = require("./src/commands");
-const { loadEvents } = require("./src/utils/loader");
-const { connectDB, loadReminders } = require("./src/utils/db");
-const { logToChannel } = require("./src/utils/logger");
+// 🔧 FIX tương thích better-sqlite3 v12
+const Database = require("better-sqlite3").default || require("better-sqlite3");
 
-// =============== ⚙️ 1. Tạo Client Discord ===============
+// ====== CONFIG ======
+const MAIN_COLOR = "#ff70d3";
+const db = new Database("giveaways.db");
+db.prepare(`CREATE TABLE IF NOT EXISTS giveaways (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT,
+  message_id TEXT,
+  prize TEXT,
+  winners INTEGER,
+  end_time INTEGER,
+  host_id TEXT
+)`).run();
+
+// ====== BOT SETUP ======
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.MessageContent,
-  ],
-  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessageReactions
+  ]
 });
 
 client.commands = new Collection();
+const foldersPath = path.join(__dirname, "commands");
 
-// =============== ⚙️ 2. Khi bot sẵn sàng ===============
-client.once(Events.ClientReady, async () => {
-  console.log(`✅ Đã đăng nhập: ${client.user.tag}`);
-
-  try {
-    // Kết nối DB (SQLite)
-    await connectDB();
-
-    // Nạp lệnh slash
-    await loadCommands(client);
-
-    // Nạp sự kiện (message, voice, join, v.v.)
-    await loadEvents(client);
-
-    // Khôi phục reminder
-    await loadReminders(client);
-
-    // Set trạng thái bot
-    client.user.setPresence({
-      activities: [{ name: "💞 cùng bạn chill ở Discord", type: 0 }],
-      status: "online",
-    });
-
-    // Ghi log khởi động
-    logToChannel(client, "✅ Meyia đã khởi động thành công!");
-  } catch (err) {
-    console.error("❌ Lỗi khi khởi tạo bot:", err);
+// Load tất cả lệnh
+for (const folder of fs.readdirSync(foldersPath)) {
+  const commandsPath = path.join(foldersPath, folder);
+  for (const file of fs.readdirSync(commandsPath).filter(f => f.endsWith(".js"))) {
+    const command = require(path.join(commandsPath, file));
+    client.commands.set(command.data.name, command);
   }
-});
+}
 
-// =============== ⚙️ 3. Xử lý Slash Command ===============
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+// ====== UTILS ======
+const { scheduleGiveaway } = require("./utils/giveawayScheduler");
+client.scheduleGiveaway = scheduleGiveaway;
+client.db = db;
+client.MAIN_COLOR = MAIN_COLOR;
 
-  const command = client.commands.get(interaction.commandName);
-  if (!command) return;
-
-  try {
-    await command.execute(interaction, client);
-  } catch (error) {
-    console.error(`❌ Lỗi ở /${interaction.commandName}:`, error);
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({
-        content: "😵 Meyia bị lỗi nhẹ... thử lại sau nha~",
-        ephemeral: true,
-      });
-    } else {
-      await interaction.reply({
-        content: "😵 Meyia bị lỗi nhẹ... thử lại sau nha~",
-        ephemeral: true,
-      });
+// ====== EVENT ======
+client.once("ready", () => {
+  console.log(`✅ Đăng nhập thành công: ${client.user.tag}`);
+  // Load lại các giveaway đang chạy
+  const giveaways = db.prepare("SELECT * FROM giveaways").all();
+  for (const g of giveaways) {
+    if (Date.now() < g.end_time) {
+      const channel = client.channels.cache.get(g.channel_id);
+      if (channel) {
+        channel.messages.fetch(g.message_id)
+          .then(msg => scheduleGiveaway(client, msg, g.end_time, g.winners, g.prize))
+          .catch(() => {});
+      }
     }
   }
 });
 
-// =============== ⚙️ 4. Xử lý lỗi Promise toàn cục ===============
-process.on("unhandledRejection", (err) => {
-  console.error("⚠️ Lỗi Promise:", err);
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  const command = client.commands.get(interaction.commandName);
+  if (!command) return;
+  try {
+    await command.execute(interaction, client);
+  } catch (err) {
+    console.error(err);
+    await interaction.reply({ content: "❌ Có lỗi xảy ra khi chạy lệnh này.", ephemeral: true });
+  }
 });
 
-process.on("uncaughtException", (err) => {
-  console.error("💥 Lỗi không bắt được:", err);
-});
-
-// =============== ⚙️ 5. Đăng nhập bot ===============
-client.login(process.env.TOKEN).catch((err) => {
-  console.error("❌ Không thể đăng nhập bot:", err);
-});
+client.login(process.env.TOKEN);
