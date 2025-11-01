@@ -1,38 +1,67 @@
-// deploy-commands.js
 require("dotenv").config();
 const { REST, Routes } = require("discord.js");
 const fs = require("fs");
+const path = require("path");
 
-const commands = [];
-const foldersPath = "./commands";
-const commandFolders = fs.readdirSync(foldersPath);
+// Lấy biến môi trường
+const CLIENT_ID = process.env.CLIENT_ID;
+const TOKEN = process.env.TOKEN;
 
-for (const folder of commandFolders) {
-  const commandsPath = `${foldersPath}/${folder}`;
-  const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith(".js"));
-  for (const file of commandFiles) {
-    const command = require(`${commandsPath}/${file}`);
-    if ("data" in command && "execute" in command) {
-      commands.push(command.data.toJSON());
-    } else {
-      console.log(`[⚠️] Lệnh tại ${file} bị thiếu thuộc tính "data" hoặc "execute".`);
+if (!CLIENT_ID || !TOKEN) {
+  console.error("❌ Lỗi: Thiếu CLIENT_ID hoặc TOKEN trong file .env");
+  process.exit(1);
+}
+
+// Hàm đọc đệ quy tất cả file lệnh trong thư mục commands
+function getAllCommandFiles(dir) {
+  const commandFiles = [];
+  const files = fs.readdirSync(dir);
+
+  for (const file of files) {
+    const filePath = path.join(dir, file);
+    const stat = fs.statSync(filePath);
+
+    if (stat.isDirectory()) {
+      commandFiles.push(...getAllCommandFiles(filePath));
+    } else if (file.endsWith(".js")) {
+      commandFiles.push(filePath);
     }
+  }
+
+  return commandFiles;
+}
+
+// Đọc tất cả file lệnh
+const commandFiles = getAllCommandFiles(path.join(__dirname, "commands"));
+const commands = [];
+
+for (const file of commandFiles) {
+  try {
+    const command = require(file);
+    if (command.data && command.data.name) {
+      commands.push(command.data.toJSON());
+      console.log(`✅ Đã tải lệnh: ${command.data.name}`);
+    } else {
+      console.warn(`⚠️ Bỏ qua file không hợp lệ: ${file}`);
+    }
+  } catch (err) {
+    console.error(`❌ Lỗi khi đọc file ${file}:`, err);
   }
 }
 
-const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+// Triển khai lệnh
+const rest = new REST({ version: "10" }).setToken(TOKEN);
 
 (async () => {
   try {
-    console.log("🔄 Đang cập nhật slash commands...");
-
+    console.log("🔄 Đang cập nhật slash commands lên Discord...");
     await rest.put(
-      Routes.applicationCommands(process.env.CLIENT_ID),
-      { body: commands },
+      Routes.applicationCommands(CLIENT_ID),
+      { body: commands }
     );
 
-    console.log("✅ Hoàn tất! Slash commands đã được cập nhật lên Discord.");
+    console.log(`🎉 Hoàn tất! Đã cập nhật ${commands.length} lệnh lên Discord.`);
   } catch (error) {
-    console.error(error);
+    console.error("❌ Lỗi khi deploy lệnh:", error);
   }
 })();
