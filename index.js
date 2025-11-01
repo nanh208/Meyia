@@ -1,14 +1,15 @@
-// index.js — Meiya All-in-One (Giveaway + Cute Presence)
+// index.js — Meiya All-in-One (Giveaway + Music + Cute Presence)
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const { Client, GatewayIntentBits, Collection } = require("discord.js");
-
-// 🔧 FIX tương thích better-sqlite3 v12
 const Database = require("better-sqlite3").default || require("better-sqlite3");
+const { setupPlayer } = require("./utils/playerSetup");
 
 // ====== CONFIG ======
 const MAIN_COLOR = "#ff70d3";
+
+// ====== DATABASE (Giveaway) ======
 const db = new Database("giveaways.db");
 db.prepare(`CREATE TABLE IF NOT EXISTS giveaways (
   id TEXT PRIMARY KEY,
@@ -24,6 +25,7 @@ db.prepare(`CREATE TABLE IF NOT EXISTS giveaways (
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
@@ -35,6 +37,13 @@ client.commands = new Collection();
 client.db = db;
 client.MAIN_COLOR = MAIN_COLOR;
 
+// ====== UTILS ======
+const { scheduleGiveaway } = require("./utils/giveawayScheduler");
+client.scheduleGiveaway = scheduleGiveaway;
+
+// ====== MUSIC PLAYER ======
+setupPlayer(client); // Gọi setupPlayer (discord-player)
+
 // ====== LOAD SLASH COMMANDS ======
 const foldersPath = path.join(__dirname, "commands");
 for (const folder of fs.readdirSync(foldersPath)) {
@@ -45,17 +54,11 @@ for (const folder of fs.readdirSync(foldersPath)) {
   }
 }
 
-// ====== UTILS ======
-const { scheduleGiveaway } = require("./utils/giveawayScheduler");
-client.scheduleGiveaway = scheduleGiveaway;
-
 // ====== EVENT: READY ======
-client.once("ready", () => {
+client.once("clientReady", () => {
   console.log(`✅ Đăng nhập thành công: ${client.user.tag}`);
-
-  // 🌸 Trạng thái dễ thương cho Meiya
   client.user.setPresence({
-    activities: [{ name: "🌸 | /help để xem lệnh", type: 0 }],
+    activities: [{ name: "🌸 | /play và /help để xem lệnh", type: 0 }],
     status: "online"
   });
 
@@ -73,10 +76,9 @@ client.once("ready", () => {
   }
 });
 
-// ====== EVENT: INTERACTION ======
+// ====== EVENT: SLASH COMMAND ======
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
-
   const command = client.commands.get(interaction.commandName);
   if (!command) return;
 
@@ -84,10 +86,12 @@ client.on("interactionCreate", async (interaction) => {
     await command.execute(interaction, client);
   } catch (err) {
     console.error("❌ Command error:", err);
-    await interaction.reply({
-      content: "⚠️ Có lỗi xảy ra khi chạy lệnh này.",
-      ephemeral: true
-    });
+    const errorMsg = "⚠️ Có lỗi xảy ra khi chạy lệnh này.";
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({ content: errorMsg, ephemeral: true });
+    } else {
+      await interaction.reply({ content: errorMsg, ephemeral: true });
+    }
   }
 });
 

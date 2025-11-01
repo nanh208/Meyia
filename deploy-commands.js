@@ -55,10 +55,16 @@ const rest = new REST({ version: "10" }).setToken(TOKEN);
 (async () => {
   try {
     console.log("🔄 Đang cập nhật slash commands lên Discord...");
-    await rest.put(
-      Routes.applicationCommands(CLIENT_ID),
-      { body: commands }
-    );
+const GUILD_ID = process.env.GUILD_ID;
+
+if (!GUILD_ID) {
+  console.warn("⚠️ Thiếu GUILD_ID, deploy toàn cầu (mất vài phút để hiển thị).");
+  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+} else {
+  console.log(`🔧 Deploy trong server ID: ${GUILD_ID}`);
+  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+}
+
 
     console.log(`🎉 Hoàn tất! Đã cập nhật ${commands.length} lệnh lên Discord.`);
   } catch (error) {
